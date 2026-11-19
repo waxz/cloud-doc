@@ -44,17 +44,16 @@ migrations_dir = "migrations"
 # PBKDF2 iterations for new passwords. 50,000 (~5 ms of CPU) fits the Free
 # plan's 10 ms limit; on the paid plan raise it to 100,000 (the Workers maximum).
 PASSWORD_ITERATIONS = "50000"
-# cloud-drive stores uploaded files and page history. Without it (no URL and
-# no CLOUD_DRIVE binding) everything else works and the app hides uploads and
-# history. Not needed when you use the CLOUD_DRIVE service binding below.
-CLOUD_DRIVE_URL = ""
-CLOUD_DRIVE_DRIVE = "drive"
 
-# To use a cloud-drive Worker on the same account, bind it (a Worker can't
-# reach another Worker on the same account through its workers.dev URL):
+# Files and page history go to cloud-drive (optional). Connect it with one
+# secret, the drive's WebDAV URL with a cloud-drive user in it:
+#   npx wrangler secret put CLOUD_DRIVE_URL
+#   https://user:password@cloud-drive.example.com/dav/drive
+# Without it, everything else works and uploads and history are turned off.
+#
+# For a cloud-drive Worker on the same account, also add this binding (a
+# Worker can't reach another Worker on the same account through its
+# workers.dev URL); the URL then only supplies the user and drive path.
 # [[services]]
 # binding = "CLOUD_DRIVE"
 # service = "cf-drive"
-
-# Secrets (`wrangler secret put`, or .dev.vars locally):
-#   CLOUD_DRIVE_USER, CLOUD_DRIVE_PASSWORD  cloud-drive user with write access to the drive

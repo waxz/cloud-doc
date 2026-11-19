@@ -247,9 +247,11 @@ await anon.expect(401, 'GET', `/api/pages/${sPage.id}`);
 console.log('✓ share links: public read, subpages, commenter for outsiders, revoke');
 
 // --- delete cascades to cloud-drive ---
-// History files, checked directly in cloud-drive (DRIVE_* default to the local dev setup).
-const drive = `${process.env.DRIVE_URL ?? 'http://127.0.0.1:8792'}/dav/${process.env.DRIVE_NAME ?? 'drive'}/wiki/history/${sPage.id}/`;
-const driveAuth = { authorization: `Basic ${btoa(`${process.env.DRIVE_USER ?? 'ww'}:${process.env.DRIVE_PASS ?? 'wwpass123'}`)}`, depth: '1' };
+// History files, checked directly in cloud-drive. CLOUD_DRIVE_URL uses the
+// wiki's format (user and drive in the URL) and defaults to the local dev setup.
+const driveUrl = new URL(process.env.CLOUD_DRIVE_URL ?? 'http://ww:wwpass123@127.0.0.1:8792/dav/drive');
+const driveAuth = { authorization: `Basic ${btoa(`${decodeURIComponent(driveUrl.username)}:${decodeURIComponent(driveUrl.password)}`)}`, depth: '1' };
+const drive = `${driveUrl.origin}${driveUrl.pathname.replace(/\/+$/, '')}/wiki/history/${sPage.id}/`;
 const before = await (await fetch(drive, { method: 'PROPFIND', headers: driveAuth })).text();
 assert.ok((before.match(/\.ydoc</g) ?? []).length >= 3, 'snapshots stored in cloud-drive');
 await alice.ok('DELETE', `/api/pages/${sPage.id}`);

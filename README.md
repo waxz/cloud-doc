@@ -105,27 +105,23 @@ enough; see [Workers Free plan](#workers-free-plan).
 
 Without cloud-drive the wiki runs normally, but image/file uploads are off
 (the editor offers images by URL instead) and the History panel says it isn't
-connected. To turn them on:
+connected. To turn them on, you need one secret:
 
 1. Deploy [cloud-drive](https://github.com/waxz/cloud-drive) and create a user
    with a drive (e.g. `drive`) they can write to.
-2. In `wrangler.toml`, uncomment the `[[services]]` block and set `service`
-   to the cloud-drive Worker's name (`cf-drive` by default). A Worker can't
-   reach another Worker on the same account through its `workers.dev` URL, so
-   use the binding rather than `CLOUD_DRIVE_URL`. (A cloud-drive on another
-   account or a custom domain works with `CLOUD_DRIVE_URL` instead.)
-3. Set `CLOUD_DRIVE_DRIVE` if the drive isn't called `drive`, and the user's
-   credentials:
+2. Set `CLOUD_DRIVE_URL` to the drive's WebDAV URL with that user in it:
 
    ```bash
-   npx wrangler secret put CLOUD_DRIVE_USER
+   npx wrangler secret put CLOUD_DRIVE_URL
    ```
 
-   ```bash
-   npx wrangler secret put CLOUD_DRIVE_PASSWORD
-   ```
-
-4. Deploy again.
+   and paste e.g. `https://user:password@cloud-drive.example.com/dav/drive`
+   (`@`, `/`, `#` or `?` in the password must be percent-encoded).
+3. If cloud-drive is a Worker on the same Cloudflare account, also uncomment
+   the `[[services]]` block in `wrangler.toml` (with `service` set to its
+   Worker name, `cf-drive` by default) and deploy again. A Worker can't reach
+   another Worker on the same account through its `workers.dev` URL; through
+   the binding, the URL only supplies the user and the drive path.
 
 In cloud-drive the wiki uses `wiki/files/<page>/…` for uploads and
 `wiki/history/<page>/<version>.ydoc` for snapshots; both are removed when the
@@ -135,11 +131,9 @@ page is deleted.
 
 | Name | Kind | Meaning |
 | --- | --- | --- |
+| `CLOUD_DRIVE_URL` | secret, optional | cloud-drive WebDAV URL of the drive, with the user in it: `https://user:password@host/dav/<drive>`. Unset = no uploads or history. |
+| `CLOUD_DRIVE` | service binding, optional | The cloud-drive Worker, when it's on the same account. |
 | `PASSWORD_ITERATIONS` | var | PBKDF2-SHA256 iterations for new passwords. Default 50,000. |
-| `CLOUD_DRIVE` | service binding, optional | The cloud-drive Worker. |
-| `CLOUD_DRIVE_URL` | var, optional | cloud-drive base URL, when not using the binding. Empty = not connected. |
-| `CLOUD_DRIVE_DRIVE` | var | cloud-drive drive for files and history (under `wiki/`). Default `drive`. |
-| `CLOUD_DRIVE_USER`, `CLOUD_DRIVE_PASSWORD` | secret | cloud-drive user with write access to that drive. |
 
 ## Develop locally
 
@@ -159,8 +153,8 @@ local cloud-drive (its own `wrangler dev` on port 8792):
 cp .dev.vars.example .dev.vars
 ```
 
-and fill in the cloud-drive user. Open the app in two browsers to see live
-editing.
+and put the local drive's URL, with a cloud-drive user, in `.dev.vars`.
+Open the app in two browsers to see live editing.
 
 ### Tests
 
@@ -172,10 +166,9 @@ npm run test:api
 
 checks accounts, invites, project privacy and roles, read-only live sync,
 search scoping, files, comments, history in cloud-drive with live restore,
-share links and delete cascades. It talks to cloud-drive directly as the
-`ww` / `wwpass123` user by default (override with `DRIVE_USER`,
-`DRIVE_PASS`, `DRIVE_NAME`, `DRIVE_URL`; the wiki's own server via
-`WIKI_URL`).
+share links and delete cascades. It also checks cloud-drive directly, at
+`CLOUD_DRIVE_URL` (same format as the wiki's; defaults to the local
+`ww` / `wwpass123` user and `drive`); `WIKI_URL` points it at the wiki.
 
 ```bash
 npx playwright install chromium
@@ -233,6 +226,7 @@ many people will outgrow the Free plan.
 | `worker/pages.ts` | Pages, search, files, history, comments, share links |
 | `worker/page-room.ts` | `PageRoom` Durable Object: sync, read-only roles, save, snapshots, restore |
 | `worker/drive.ts` | cloud-drive WebDAV client |
+| `.npmrc` | `legacy-peer-deps`: y-partyserver still declares the old workers-types 4 as a peer while Wrangler wants 5 (types only) |
 | `migrations/` | D1 schema (also listed in `worker/migrate.ts`) |
 | `client/src/` | React app: shell and sidebar, page view, comments, history, share, settings |
 | `test/` | `api.mjs` (API and permissions), `ui.cjs` (browser walk-through) |
