@@ -1,0 +1,6 @@
+# Local development. Copy to .dev.vars.
+# cloud-drive running locally (its own `wrangler dev`, port 8792), and a user
+# with write access to CLOUD_DRIVE_DRIVE. Leave the URL empty to run without it.
+CLOUD_DRIVE_URL=http://127.0.0.1:8792
+CLOUD_DRIVE_USER=
+CLOUD_DRIVE_PASSWORD=
