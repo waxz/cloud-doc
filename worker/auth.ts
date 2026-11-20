@@ -1,4 +1,3 @@
-import { storageEnabled } from './drive.js';
 import type { Env } from './env.js';
 import { cookie, getCookie, HttpError, json, newId, randomToken, readJson, sha256Hex, str } from './http.js';
 
@@ -6,6 +5,8 @@ export interface User {
   id: string;
   email: string;
   name: string;
+  /** Instance role: the first account is the admin; admins manage users. */
+  role: 'admin' | 'member';
 }
 
 const SESSION_COOKIE = 'wiki_session';
@@ -27,13 +28,13 @@ async function pbkdf2(password: string, salt: Uint8Array<ArrayBuffer>, iteration
 }
 
 /** `pbkdf2-sha256$<iterations>$<salt>$<hash>`: the count is stored so it can be raised later. */
-async function hashPassword(env: Env, password: string): Promise<string> {
+export async function hashPassword(env: Env, password: string): Promise<string> {
   const iterations = Math.min(MAX_ITERATIONS, Number(env.PASSWORD_ITERATIONS) || DEFAULT_ITERATIONS);
   const salt = crypto.getRandomValues(new Uint8Array(16));
   return `pbkdf2-sha256$${iterations}$${b64(salt)}$${b64(await pbkdf2(password, salt, iterations))}`;
 }
 
-async function verifyPassword(stored: string, password: string): Promise<boolean> {
+export async function verifyPassword(stored: string, password: string): Promise<boolean> {
   const [scheme, iter, salt, hash] = stored.split('$');
   if (scheme !== 'pbkdf2-sha256' || !iter || !salt || !hash) return false;
   const got = await pbkdf2(password, unb64(salt), Number(iter));
@@ -59,8 +60,8 @@ export async function currentUser(req: Request, env: Env): Promise<User | null> 
   const token = getCookie(req, SESSION_COOKIE);
   if (!token) return null;
   return env.DB.prepare(
-    `SELECT u.id, u.email, u.name FROM sessions s JOIN users u ON u.id = s.user_id
-     WHERE s.id = ? AND s.expires_at > ?`
+    `SELECT u.id, u.email, u.name, u.role FROM sessions s JOIN users u ON u.id = s.user_id
+     WHERE s.id = ? AND s.expires_at > ? AND u.disabled = 0`
   )
     .bind(await sha256Hex(token), Date.now())
     .first<User>();
@@ -71,19 +72,67 @@ export function requireUser(user: User | null): User {
   return user;
 }
 
+export function requireAdmin(user: User | null): User {
+  const u = requireUser(user);
+  if (u.role !== 'admin') throw new HttpError(403, 'admins only');
+  return u;
+}
+
 async function me(env: Env, user: User): Promise<Response> {
+  const flags = await env.DB.prepare('SELECT can_create_workspaces FROM users WHERE id = ?')
+    .bind(user.id)
+    .first<{ can_create_workspaces: number }>();
   const { results } = await env.DB.prepare(
     `SELECT w.id, w.name, m.role FROM workspace_members m JOIN workspaces w ON w.id = m.workspace_id
      WHERE m.user_id = ? ORDER BY w.created_at`
   )
     .bind(user.id)
     .all();
-  return json({ user, workspaces: results, storage: storageEnabled(env) });
+  return json({ user, canCreateWorkspaces: !!flags?.can_create_workspaces, workspaces: results });
 }
 
+/** Whether the instance still needs its first (admin) account. */
+async function needsSetup(env: Env): Promise<boolean> {
+  return !(await env.DB.prepare('SELECT 1 FROM users LIMIT 1').first());
+}
+
+export async function authStatus(env: Env): Promise<Response> {
+  return json({ setup: await needsSetup(env) });
+}
+
+interface RegistrationLink {
+  token: string;
+  email: string | null;
+  role: 'admin' | 'member';
+}
+
+async function validLink(env: Env, token: string): Promise<RegistrationLink | null> {
+  return env.DB.prepare(
+    `SELECT token, email, role FROM registration_links
+     WHERE token = ? AND used_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`
+  )
+    .bind(token, Date.now())
+    .first<RegistrationLink>();
+}
+
+/** What a registration link page needs to show (no secrets). */
+export async function registrationInfo(env: Env, token: string): Promise<Response> {
+  const link = await validLink(env, token);
+  if (!link) throw new HttpError(404, 'this registration link has expired or was already used');
+  return json({ email: link.email });
+}
+
+/**
+ * Sign-up is open only for the very first account (which becomes the
+ * admin). After that it needs a registration link from an admin.
+ */
 export async function signup(req: Request, env: Env): Promise<Response> {
-  const body = await readJson<{ email?: string; name?: string; password?: string }>(req);
+  const body = await readJson<{ email?: string; name?: string; password?: string; token?: string }>(req);
+  const first = await needsSetup(env);
+  const link = first ? null : body.token ? await validLink(env, body.token) : null;
+  if (!first && !link) throw new HttpError(403, 'sign-up needs a registration link from an admin');
   const email = str(body.email, 'email').toLowerCase();
+  if (link?.email && link.email.toLowerCase() !== email) throw new HttpError(400, `this link is for ${link.email}`);
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new HttpError(400, 'invalid email');
   const name = str(body.name, 'name', 80);
   const password = typeof body.password === 'string' ? body.password : '';
@@ -91,22 +140,39 @@ export async function signup(req: Request, env: Env): Promise<Response> {
   if (await env.DB.prepare('SELECT 1 FROM users WHERE email = ?').bind(email).first()) {
     throw new HttpError(409, 'an account with this email already exists');
   }
-  const user: User = { id: newId(), email, name };
-  await env.DB.batch([
-    env.DB.prepare('INSERT INTO users (id, email, name, password_hash, created_at) VALUES (?, ?, ?, ?, ?)').bind(
-      user.id,
-      email,
-      name,
-      await hashPassword(env, password),
-      Date.now()
-    ),
-    // Workspaces that invited this email before the account existed.
-    env.DB.prepare(
-      `INSERT INTO workspace_members (workspace_id, user_id, role)
-       SELECT workspace_id, ?, role FROM workspace_invites WHERE email = ?`
-    ).bind(user.id, email),
-    env.DB.prepare('DELETE FROM workspace_invites WHERE email = ?').bind(email),
-  ]);
+  const user: User = { id: newId(), email, name, role: first ? 'admin' : (link?.role ?? 'member') };
+  // A link works once: claim it atomically before creating the account.
+  if (link) {
+    const claimed = await env.DB.prepare(
+      'UPDATE registration_links SET used_at = ? WHERE token = ? AND used_at IS NULL RETURNING token'
+    )
+      .bind(Date.now(), link.token)
+      .first();
+    if (!claimed) throw new HttpError(409, 'this registration link was just used');
+  }
+  try {
+    await env.DB.batch([
+      env.DB.prepare('INSERT INTO users (id, email, name, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?, ?)').bind(
+        user.id,
+        email,
+        name,
+        await hashPassword(env, password),
+        user.role,
+        Date.now()
+      ),
+      // Workspaces that invited this email before the account existed.
+      env.DB.prepare(
+        `INSERT INTO workspace_members (workspace_id, user_id, role)
+         SELECT workspace_id, ?, role FROM workspace_invites WHERE email = ?`
+      ).bind(user.id, email),
+      env.DB.prepare('DELETE FROM workspace_invites WHERE email = ?').bind(email),
+      ...(link ? [env.DB.prepare('UPDATE registration_links SET used_by = ? WHERE token = ?').bind(user.id, link.token)] : []),
+    ]);
+  } catch (err) {
+    // Give the link back if the account couldn't be created.
+    if (link) await env.DB.prepare('UPDATE registration_links SET used_at = NULL WHERE token = ?').bind(link.token).run();
+    throw err;
+  }
   const res = await me(env, user);
   res.headers.append('set-cookie', await startSession(env, user.id));
   return new Response(res.body, { status: 201, headers: res.headers });
@@ -123,9 +189,9 @@ export async function login(req: Request, env: Env): Promise<Response> {
   if (fails && now - fails.window_start < FAILURE_WINDOW && fails.count >= MAX_FAILURES) {
     throw new HttpError(429, 'too many failed sign-ins; try again in 15 minutes');
   }
-  const row = await env.DB.prepare('SELECT id, email, name, password_hash FROM users WHERE email = ?')
+  const row = await env.DB.prepare('SELECT id, email, name, role, password_hash, disabled FROM users WHERE email = ?')
     .bind(email)
-    .first<User & { password_hash: string }>();
+    .first<User & { password_hash: string; disabled: number }>();
   const ok = await verifyPassword(row?.password_hash ?? DUMMY_HASH, password);
   if (!row || !ok) {
     await env.DB.prepare(
@@ -139,7 +205,8 @@ export async function login(req: Request, env: Env): Promise<Response> {
     throw new HttpError(401, 'wrong email or password');
   }
   await env.DB.prepare('DELETE FROM login_failures WHERE email = ?').bind(email).run();
-  const user: User = { id: row.id, email: row.email, name: row.name };
+  if (row.disabled) throw new HttpError(403, 'this account is disabled');
+  const user: User = { id: row.id, email: row.email, name: row.name, role: row.role };
   const res = await me(env, user);
   res.headers.append('set-cookie', await startSession(env, user.id));
   return res;

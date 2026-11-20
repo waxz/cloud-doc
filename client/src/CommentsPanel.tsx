@@ -1,6 +1,6 @@
 import type { BlockNoteEditor } from '@blocknote/core';
 import { ActionIcon, Badge, Blockquote, Button, Group, Menu, Paper, SegmentedControl, Stack, Text, Textarea } from '@mantine/core';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, atLeast, type Comment, type Role, type User } from './api';
 import { errorText, timeAgo } from './util';
 
@@ -11,15 +11,24 @@ interface Props {
   editor: BlockNoteEditor<any, any, any> | null;
   /** Bumped when the page's room reports a comment change. */
   refreshKey: number;
+  /** Text to quote in a new comment (from the editor's Comment button). */
+  quoteRequest?: { text: string; n: number } | null;
   onError: (message: string) => void;
 }
 
-export function CommentsPanel({ pageId, role, me, editor, refreshKey, onError }: Props) {
+export function CommentsPanel({ pageId, role, me, editor, refreshKey, quoteRequest, onError }: Props) {
   const [comments, setComments] = useState<Comment[]>([]);
   const [show, setShow] = useState<'open' | 'resolved'>('open');
   const [draft, setDraft] = useState('');
   const [quote, setQuote] = useState('');
   const canComment = !!me && atLeast(role, 'commenter');
+  const box = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    if (!quoteRequest) return;
+    setShow('open');
+    setQuote(quoteRequest.text.slice(0, 500));
+    setTimeout(() => box.current?.focus(), 50);
+  }, [quoteRequest]);
 
   const load = useCallback(() => api.comments(pageId).then(setComments, (e) => onError(errorText(e))), [pageId, onError]);
   useEffect(() => {
@@ -69,6 +78,7 @@ export function CommentsPanel({ pageId, role, me, editor, refreshKey, onError }:
             </Blockquote>
           )}
           <Textarea
+            ref={box}
             placeholder="Add a comment…"
             autosize
             minRows={2}

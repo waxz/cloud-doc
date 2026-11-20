@@ -3,31 +3,42 @@
 A collaborative wiki that runs entirely on Cloudflare: workspaces and
 projects, accounts and permissions, several people editing a page at once
 with live cursors, comments, page history, and pages you can share or
-publish with a link. Files and page history are stored in
-[cloud-drive](https://github.com/waxz/cloud-drive).
+publish with a link. Each user keeps their uploads and page history in their
+own WebDAV storage, such as a [cloud-drive](https://github.com/waxz/cloud-drive)
+drive or Nextcloud. Works on laptops and phones.
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/waxz/cloud-doc)
 
 | Piece | Built with |
 | --- | --- |
-| Editor | [BlockNote](https://www.blocknotejs.org/) (React, MPL-2.0) with Yjs collaboration, Mantine UI |
+| Editor and UI | [BlockNote](https://www.blocknotejs.org/) (MPL-2.0) with Yjs collaboration; [Mantine](https://mantine.dev/) and [Tabler icons](https://tabler.io/icons) |
 | Live sync | One Durable Object per page ([`y-partyserver`](https://github.com/cloudflare/partykit/tree/main/packages/y-partyserver)), hibernating WebSockets |
 | Page content | The page's Yjs document, in its Durable Object's SQLite storage |
-| Accounts, workspaces, projects, permissions, comments, share links, search | D1 (search uses FTS5) |
-| Images, files, page history | cloud-drive, over its WebDAV API (optional) |
+| Accounts, workspaces, projects, permissions, storages, comments, share links, search | D1 (search uses FTS5) |
+| Images, video, PDFs, files, page history | Each user's WebDAV storage |
 
 ```
  browser ──HTTP──▶ Worker ── checks access ──▶ D1
-    │                 └──────────────────────▶ cloud-drive (files, history)
+    │                 └──────────────────────▶ the user's WebDAV storage (files)
     └─WebSocket─▶ Worker ── role ──▶ PageRoom Durable Object (one per page)
                                        ├─ Yjs sync + presence (read-only below editor)
                                        ├─ saves state to its SQLite storage
                                        ├─ on save: title + text → D1 search
-                                       └─ snapshots → cloud-drive history/
+                                       └─ snapshots → the saver's WebDAV storage
 ```
 
 ## Features
 
+- **Accounts.** The first account created on a new install is the instance
+  admin. After that, sign-up is closed: the admin creates accounts directly,
+  or sends registration links (optionally tied to an email, with a role and an
+  expiry; each works once). Admins set each user's role (admin or member),
+  whether they may create workspaces, a storage limit, their WebDAV storage,
+  and can disable or delete accounts.
+- **Storage per user.** In *Settings → Storage* each user adds one or more
+  WebDAV folders, tests the connection, and picks a default plus, optionally,
+  a different one per workspace. Their uploads and the history versions they
+  save go there; the usage counts against their storage limit.
 - **Workspaces** with owners, admins and members. Admins add people by email;
   someone without an account joins when they sign up with that email.
 - **Projects** inside a workspace, each with a page tree. A project either
@@ -35,13 +46,29 @@ publish with a link. Files and page history are stored in
   added to it.
 - **Roles per project:** *viewer*, *commenter*, *editor*, *admin*. Workspace
   owners and admins administer every project.
-- **Real-time editing** with live cursors and avatars. The title syncs like
-  the body. Viewers and commenters get the page live but read-only.
-- **Comments** in a side panel: threads with replies, an optional quote of the
-  selected text, resolve/reopen, edit or delete your own. Open pages refresh
+- **Page tree** like Docmost's: fold/unfold (remembered per browser), emoji
+  icons, drag and drop to reorder or nest (drop on the top or bottom edge of a
+  page to place it before or after, on the middle to put it inside), and a ⋯
+  menu with *Add subpage*, *Upload file…*, *Move to…* (handy on phones),
+  *Copy link* and *Delete*.
+- **Real-time editing** with live cursors and avatars. The title and emoji
+  sync like the body. Viewers and commenters get the page live but read-only.
+- **Images, video, audio, PDFs and files** in pages: drop or paste them into
+  the editor, use `/image`, `/video`, `/pdf` or `/file`, upload from the tree's
+  ⋯ menu, or from the page's *Files* panel. PDFs show inline. Files are
+  streamed from the uploader's storage to anyone who can read the page (with
+  range requests, so video seeks).
+- **Phones and tablets:** the page tree is a slide-out menu, panels open as
+  bottom sheets, and page actions sit in a ⋯ menu.
+- **Comments** in a side panel: threads with replies, a quote of the selected
+  text (select text and press *Comment* in the formatting toolbar; commenters
+  get a *Comment* button over their selection), resolve/reopen, edit or delete your own. Open pages refresh
   when someone comments.
-- **Page history:** a snapshot of the page is written to cloud-drive at most
-  every 10 minutes while it changes, plus *Save a version now*. Preview any
+- **Page history:** a snapshot of the page is saved at most every 10 minutes
+  while it changes, plus *Save a version now*. A saved version goes to the
+  storage of whoever saved it; automatic ones go to the page creator's storage
+  (or the workspace owner's), and are skipped if they have none or are over
+  their limit. Preview any
   version and restore it; the restore reaches everyone on the page live, and
   the replaced content is kept as a *before restore* version.
 - **Share and publish:** links that grant *can view*, *can comment* or *can
@@ -50,8 +77,6 @@ publish with a link. Files and page history are stored in
   sign in. Links show only the pages they cover.
 - **Search** across the projects you can see: accent-insensitive, prefix
   matching, highlighted snippets.
-- Images and files added in the editor are stored in cloud-drive under the
-  page, and readable by whoever can read the page.
 
 ## Who can do what
 
@@ -98,41 +123,36 @@ npx wrangler deploy
 Worker from this repository. The default deploy command (`npx wrangler
 deploy`) is all it needs; no build command.
 
-Then open the Worker's URL and create the first account. The Free plan is
-enough; see [Workers Free plan](#workers-free-plan).
+Then open the Worker's URL and create the first account: it becomes the
+admin. Add your WebDAV storage under *your name → Storage*, and invite people
+from *your name → Admin → Registration links*. The Free plan is enough; see
+[Workers Free plan](#workers-free-plan).
 
-### Connect cloud-drive (files and history)
+### Storage
 
-Without cloud-drive the wiki runs normally, but image/file uploads are off
-(the editor offers images by URL instead) and the History panel says it isn't
-connected. To turn them on, you need one secret:
+Any WebDAV server works: a [cloud-drive](https://github.com/waxz/cloud-drive)
+drive (`https://<host>/dav/<drive>`), Nextcloud
+(`https://<host>/remote.php/dav/files/<user>`), and others. Use an app
+password where the server offers one. Everything goes under a `cloud-doc/`
+folder in it:
 
-1. Deploy [cloud-drive](https://github.com/waxz/cloud-drive) and create a user
-   with a drive (e.g. `drive`) they can write to.
-2. Set `CLOUD_DRIVE_URL` to the drive's WebDAV URL with that user in it:
+```
+cloud-doc/<workspace>/<page>/files/<file id>-<name>
+cloud-doc/<workspace>/<page>/history/<version>.ydoc
+```
 
-   ```bash
-   npx wrangler secret put CLOUD_DRIVE_URL
-   ```
+A page's folder is removed from every storage that holds part of it when the
+page is deleted. A storage can't be removed while files or versions still use
+it. Storage passwords are kept in D1 and never sent back to the browser.
 
-   and paste e.g. `https://user:password@cloud-drive.example.com/dav/drive`
-   (`@`, `/`, `#` or `?` in the password must be percent-encoded).
-3. If cloud-drive is a Worker on the same Cloudflare account, also uncomment
-   the `[[services]]` block in `wrangler.toml` (with `service` set to its
-   Worker name, `cf-drive` by default) and deploy again. A Worker can't reach
-   another Worker on the same account through its `workers.dev` URL; through
-   the binding, the URL only supplies the user and the drive path.
-
-In cloud-drive the wiki uses `wiki/files/<page>/…` for uploads and
-`wiki/history/<page>/<version>.ydoc` for snapshots; both are removed when the
-page is deleted.
+`wrangler.toml` sets the `global_fetch_strictly_public` compatibility flag,
+so a cloud-drive Worker on the same Cloudflare account is reached through its
+public URL like any other server.
 
 ## Configuration
 
 | Name | Kind | Meaning |
 | --- | --- | --- |
-| `CLOUD_DRIVE_URL` | secret, optional | cloud-drive WebDAV URL of the drive, with the user in it: `https://user:password@host/dav/<drive>`. Unset = no uploads or history. |
-| `CLOUD_DRIVE` | service binding, optional | The cloud-drive Worker, when it's on the same account. |
 | `PASSWORD_ITERATIONS` | var | PBKDF2-SHA256 iterations for new passwords. Default 50,000. |
 
 ## Develop locally
@@ -146,47 +166,55 @@ npm run dev
 ```
 
 opens the app on `http://localhost:8787` (Wrangler builds the client first
-and rebuilds when `client/` changes). It runs without cloud-drive. To use a
-local cloud-drive (its own `wrangler dev` on port 8792):
+and rebuilds when `client/` changes). For storage, run the small in-memory
+WebDAV server the tests use:
 
 ```bash
-cp .dev.vars.example .dev.vars
+node test/webdav-server.mjs
 ```
 
-and put the local drive's URL, with a cloud-drive user, in `.dev.vars`.
-Open the app in two browsers to see live editing.
+and add `http://127.0.0.1:8793` (user `dav`, password `davpass`) in
+*Settings → Storage*; or point it at a local cloud-drive. Open the app in two
+browsers to see live editing.
 
 ### Tests
 
-With `npm run dev` and a local cloud-drive running:
+Both suites need a running app with an **empty** database (the first account
+they create must become the admin), and start their own WebDAV server. For
+example:
+
+```bash
+npx wrangler dev --persist-to /tmp/cloud-doc-test
+```
 
 ```bash
 npm run test:api
 ```
 
-checks accounts, invites, project privacy and roles, read-only live sync,
-search scoping, files, comments, history in cloud-drive with live restore,
-share links and delete cascades. It also checks cloud-drive directly, at
-`CLOUD_DRIVE_URL` (same format as the wiki's; defaults to the local
-`ww` / `wwpass123` user and `drive`); `WIKI_URL` points it at the wiki.
-
-```bash
-npx playwright install chromium
-```
+checks the first-account admin, closed sign-up and registration links,
+admin-created and disabled accounts, storages (testing, default,
+per-workspace, admin-managed, passwords hidden), invites, project privacy and
+roles, read-only live sync, search scoping, uploads (range reads, storage
+limits, deletes), comments, history in the saver's storage with live restore,
+share links and delete cascades into storage. `WIKI_URL` points it at the app.
 
 ```bash
 npm run test:ui
 ```
 
-walks through the same flows in a browser (two users and a signed-out
-visitor). Set `CHROMIUM_PATH` to use an existing Chromium instead, and
-`SHOTS` to a folder for screenshots.
+walks through the same flows in a browser, on a desktop window and an
+iPhone-sized one: setup, storage, emoji, uploading an image and a PDF from the
+tree, registration links, co-editing, the toolbar's Comment button, history,
+the Files panel, drag and drop in the tree and the phone's menu and bottom
+sheets. Set `CHROMIUM_PATH` to use an existing Chromium (otherwise run
+`npx playwright install chromium` first), and `SHOTS` to a folder for
+screenshots. Run each suite against its own fresh database.
 
 ## Workers Free plan
 
 The design fits the Free plan for a small team:
 
-- The Worker is about 80 KB gzipped (limit 3 MB); static files don't count.
+- The Worker is about 90 KB gzipped (limit 3 MB); static files don't count.
 - Sync messages are small, so requests stay inside the 10 ms CPU limit, and
   Durable Objects hibernate between messages.
 - Password hashing is the one CPU-heavy step. Measured in local workerd,
@@ -208,7 +236,8 @@ many people will outgrow the Free plan.
 - Lowering someone's role takes effect on new connections; a page they
   already have open keeps its live connection until they reload or reconnect.
 - No email sending: no address verification, password reset or invite emails.
-  Admins add people by email and tell them to sign up.
+  Admins send registration links themselves, and reset passwords in the
+  admin panel.
 - Comments sit in a side panel with an optional quote; they aren't anchored to
   a position in the text.
 - On a published page, signed-out readers see the avatars of people currently
@@ -220,13 +249,14 @@ many people will outgrow the Free plan.
 | --- | --- |
 | `worker/index.ts` | Router and live-sync entry (sets the role for the page's room) |
 | `worker/migrate.ts` | Applies bundled D1 migrations on first use |
-| `worker/auth.ts` | Accounts, password hashing, sessions |
+| `worker/auth.ts` | Accounts, first-account setup, registration links, password hashing, sessions |
+| `worker/settings.ts` | Profile, storages, admin (users and registration links) |
 | `worker/access.ts` | Roles: workspace, project, share link → effective page role |
 | `worker/workspaces.ts` | Workspaces, members, invites, projects, project members |
 | `worker/pages.ts` | Pages, search, files, history, comments, share links |
+| `worker/storage.ts` | WebDAV client, picking a user's storage, storage limits |
 | `worker/page-room.ts` | `PageRoom` Durable Object: sync, read-only roles, save, snapshots, restore |
-| `worker/drive.ts` | cloud-drive WebDAV client |
 | `.npmrc` | `legacy-peer-deps`: y-partyserver still declares the old workers-types 4 as a peer while Wrangler wants 5 (types only) |
 | `migrations/` | D1 schema (also listed in `worker/migrate.ts`) |
-| `client/src/` | React app: shell and sidebar, page view, comments, history, share, settings |
-| `test/` | `api.mjs` (API and permissions), `ui.cjs` (browser walk-through) |
+| `client/src/` | React app: shell, page tree, editor (PDF block, toolbar), page view, comments, files, history, share, settings, admin |
+| `test/` | `api.mjs` (API and permissions), `ui.cjs` (browser walk-through), `webdav-server.mjs` (in-memory WebDAV for tests and local use) |

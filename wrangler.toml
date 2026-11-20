@@ -1,7 +1,9 @@
 name = "cloud-doc"
 main = "worker/index.ts"
 compatibility_date = "2026-11-01"
-compatibility_flags = ["nodejs_compat"]
+# global_fetch_strictly_public: storages may be cloud-drive Workers on the same
+# account, which a Worker can otherwise only reach through a service binding.
+compatibility_flags = ["nodejs_compat", "global_fetch_strictly_public"]
 
 # `wrangler deploy` and `wrangler dev` build the React app first, so a plain
 # deploy (CLI, Git builds, Deploy to Cloudflare) needs no extra step.
@@ -45,15 +47,3 @@ migrations_dir = "migrations"
 # plan's 10 ms limit; on the paid plan raise it to 100,000 (the Workers maximum).
 PASSWORD_ITERATIONS = "50000"
 
-# Files and page history go to cloud-drive (optional). Connect it with one
-# secret, the drive's WebDAV URL with a cloud-drive user in it:
-#   npx wrangler secret put CLOUD_DRIVE_URL
-#   https://user:password@cloud-drive.example.com/dav/drive
-# Without it, everything else works and uploads and history are turned off.
-#
-# For a cloud-drive Worker on the same account, also add this binding (a
-# Worker can't reach another Worker on the same account through its
-# workers.dev URL); the URL then only supplies the user and drive path.
-# [[services]]
-# binding = "CLOUD_DRIVE"
-# service = "cf-drive"

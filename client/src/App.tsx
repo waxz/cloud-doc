@@ -10,6 +10,8 @@ import { errorText } from './util';
 export function App() {
   const route = useRoute();
   const [me, setMe] = useState<Me | null | undefined>(undefined);
+  /** Whether this is a fresh install (no accounts yet), asked when signed out. */
+  const [setup, setSetup] = useState<boolean | undefined>(undefined);
   const [signingIn, setSigningIn] = useState(false);
   const [error, setError] = useState('');
   const dark = useComputedColorScheme('light') === 'dark';
@@ -26,6 +28,13 @@ export function App() {
   useEffect(() => {
     loadMe();
   }, [loadMe]);
+  useEffect(() => {
+    if (me === null) api.authStatus().then((s) => setSetup(s.setup), (e) => setError(errorText(e)));
+  }, [me]);
+  // A registration link opened while signed in: nothing to do there.
+  useEffect(() => {
+    if (me && route.name === 'register') navigate('/');
+  }, [me, route.name]);
 
   // Home (or a workspace you're not in): go to your first workspace, if any.
   const known = route.name === 'workspace' && !!me?.workspaces.some((w) => w.id === route.wid);
@@ -58,14 +67,18 @@ export function App() {
   }
 
   if (!me) {
+    if (setup === undefined) return <Loader m="xl" size="sm" />;
+    const mode = setup ? ({ kind: 'setup' } as const) : route.name === 'register' ? ({ kind: 'register', token: route.token } as const) : ({ kind: 'signin' } as const);
     return (
       <>
         {banner}
         <AuthScreen
-          note={signingIn ? 'Sign in or create an account to use this link.' : undefined}
+          mode={mode}
+          note={signingIn ? 'Sign in to use this link.' : undefined}
           onAuthed={(m) => {
             setMe(m);
             setSigningIn(false);
+            if (route.name === 'register') navigate('/');
           }}
         />
       </>
@@ -88,13 +101,40 @@ export function App() {
   return (
     <>
       {banner}
-      <FirstWorkspace onCreated={loadMe} onSignOut={signOut} onError={onError} />
+      <FirstWorkspace canCreate={me.canCreateWorkspaces || me.user.role === 'admin'} onCreated={loadMe} onSignOut={signOut} onError={onError} />
     </>
   );
 }
 
-function FirstWorkspace({ onCreated, onSignOut, onError }: { onCreated: () => void; onSignOut: () => void; onError: (m: string) => void }) {
+function FirstWorkspace({
+  canCreate,
+  onCreated,
+  onSignOut,
+  onError,
+}: {
+  canCreate: boolean;
+  onCreated: () => void;
+  onSignOut: () => void;
+  onError: (m: string) => void;
+}) {
   const [name, setName] = useState('');
+  if (!canCreate) {
+    return (
+      <div className="auth">
+        <Paper withBorder radius="lg" p="xl" w={400} maw="100%">
+          <Stack>
+            <Title order={4}>No workspace yet</Title>
+            <Text size="sm" c="dimmed">
+              You're not in a workspace yet. Ask someone to add you to theirs, then reload this page.
+            </Text>
+            <Button variant="subtle" onClick={onSignOut}>
+              Sign out
+            </Button>
+          </Stack>
+        </Paper>
+      </div>
+    );
+  }
   return (
     <div className="auth">
       <Paper withBorder radius="md" p="lg" w={380} maw="calc(100vw - 32px)">

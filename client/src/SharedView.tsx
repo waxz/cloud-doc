@@ -1,4 +1,5 @@
 import { Alert, Button, Loader, Text } from '@mantine/core';
+import { IconFileText } from '@tabler/icons-react';
 import { useCallback, useEffect, useState } from 'react';
 import { api, atLeast, type Me, type OpenedShare, ROLE_LABEL } from './api';
 import { PageView } from './PageView';
@@ -43,17 +44,18 @@ export function SharedView({ token, pageId, me, dark, onSignIn, onError }: Props
       .filter((p) => (parentId === null ? p.id === share.rootPageId : p.parent_id === parentId))
       .map((p) => (
         <div key={p.id}>
-          <div className={p.id === current ? 'item active' : 'item'} style={{ paddingLeft: 10 + depth * 14 }} onClick={() => navigate(href.share(token, p.id))}>
-            <span className="item-title">{p.title || 'Untitled'}</span>
+          <div className={p.id === current ? 'tree-row active' : 'tree-row'} style={{ paddingLeft: 8 + depth * 16 }} onClick={() => navigate(href.share(token, p.id))}>
+            <span className="tree-icon">{p.icon || <IconFileText size={16} stroke={1.6} />}</span>
+            <span className="tree-title">{p.title || 'Untitled'}</span>
           </div>
           {tree(p.id, depth + 1)}
         </div>
       ));
 
   return (
-    <div className="app">
-      {share.pages.length > 1 && <aside className="sidebar">{tree(null, 0)}</aside>}
-      <main className="main">
+    <div className="shared">
+      {share.pages.length > 1 && <aside className="shared-tree">{tree(null, 0)}</aside>}
+      <main className="shared-main">
         {!me && atLeast(share.linkRole, 'commenter') && (
           <Alert variant="light" m="sm" title={`This link lets you ${ROLE_LABEL[share.linkRole].toLowerCase().replace('can ', '')}`}>
             <Button size="compact-sm" onClick={onSignIn}>
@@ -61,7 +63,7 @@ export function SharedView({ token, pageId, me, dark, onSignIn, onError }: Props
             </Button>
           </Alert>
         )}
-        <PageView key={current} pageId={current} me={me?.user ?? null} storage={me?.storage ?? false} dark={dark} linkFor={(id) => href.share(token, id)} onTitle={onTitle} onError={onError} />
+        <PageView key={current} pageId={current} me={me?.user ?? null} dark={dark} linkFor={(id) => href.share(token, id)} onTitle={onTitle} onError={onError} />
       </main>
     </div>
   );

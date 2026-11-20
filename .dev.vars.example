@@ -1,4 +1,0 @@
-# Local development. Copy to .dev.vars.
-# cloud-drive running locally (its own `wrangler dev`, port 8792): the drive's
-# WebDAV URL with a user that can write to it. Leave out to run without it.
-CLOUD_DRIVE_URL=http://user:password@127.0.0.1:8792/dav/drive

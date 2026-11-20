@@ -1,28 +1,39 @@
-// Browser walk-through of the main flows with Playwright (two users + a
-// signed-out visitor). Usage: WIKI_URL=http://127.0.0.1:8787 SHOTS=/tmp/x node test/ui.cjs
-const { chromium } = require('playwright');
+// Browser walk-through of the main flows with Playwright, on desktop and on a
+// phone, against a running Cloud Doc with an EMPTY database (the first
+// account made here becomes the admin). Starts its own WebDAV server.
+// Usage: WIKI_URL=http://127.0.0.1:8787 SHOTS=/tmp/x node test/ui.cjs
+const { chromium, devices } = require('playwright');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const B = process.env.WIKI_URL ?? 'http://127.0.0.1:8787';
 const SHOTS = process.env.SHOTS ?? '.';
 const run = Date.now().toString(36);
+const opened = []; // pages, for a screenshot of each when something fails
 
 (async () => {
+  const { startWebDav } = await import('./webdav-server.mjs');
+  const dav = await startWebDav();
+  await fetch(`${dav.url}/alice/`, { method: 'MKCOL', headers: { authorization: `Basic ${btoa(`${dav.user}:${dav.pass}`)}` } });
+
   // CHROMIUM_PATH: use an existing Chromium instead of Playwright's download.
   const browser = await chromium.launch(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {});
   const errors = [];
-  const ctx = async (label) => {
-    const c = await browser.newContext({ viewport: { width: 1280, height: 820 } });
+  const ctx = async (label, options = { viewport: { width: 1280, height: 820 } }) => {
+    const c = await browser.newContext(options);
     await c.grantPermissions(['clipboard-read', 'clipboard-write']);
     const p = await c.newPage();
     p.on('pageerror', (e) => errors.push(`${label}: ${e.message}`));
+    opened.push([label, p]);
     return p;
   };
   const shot = (p, name) => p.screenshot({ path: `${SHOTS}/${name}.png` });
   const btn = (p, name) => p.getByRole('button', { name, exact: true });
+  const nav = (p) => p.locator('.navbar');
+  const treeRow = (p, title) => nav(p).locator('.tree-row').filter({ hasText: title });
   /** Clicks "New page" in a project and waits until the new, empty page is the one on screen. */
   const newPage = async (p, project) => {
     const before = p.url();
-    await p.getByRole('button', { name: `New page in ${project}` }).click();
+    await p.getByRole('button', { name: `New page in ${project}` }).first().click();
     await p.waitForURL((u) => u.href !== before && /\/p\//.test(u.pathname));
     await p.waitForFunction(() => {
       const t = document.querySelector('.title');
@@ -30,62 +41,119 @@ const run = Date.now().toString(36);
     });
   };
   const editorHas = (p, text) => p.waitForFunction((t) => document.querySelector('.bn-editor')?.textContent.includes(t), text, { timeout: 10000 });
+  const userMenu = async (p, item) => {
+    await p.locator('.me-button').click();
+    await p.getByRole('menuitem', { name: item }).click();
+  };
 
+  // Files to upload: a screenshot as the image and a printed page as the PDF.
+  const scratch = await ctx('scratch');
+  await scratch.setContent('<body style="margin:0;background:#1971c2;color:#fff;font:600 40px system-ui;display:grid;place-items:center;height:100vh">Launch diagram</body>');
+  await scratch.setViewportSize({ width: 640, height: 280 });
+  fs.writeFileSync(`${SHOTS}/diagram.png`, await scratch.screenshot());
+  await scratch.setContent('<h1 style="font-family:system-ui">Beta checklist</h1><p>1. Docs<br>2. Pricing<br>3. Launch post</p>');
+  fs.writeFileSync(`${SHOTS}/checklist.pdf`, await scratch.pdf({ format: 'A5' }));
+  await scratch.context().close();
+
+  // --- the first account is the admin ---
   const alice = await ctx('alice');
   const aliceEmail = `alice-${run}@example.com`, bobEmail = `bob-${run}@example.com`;
-
-  // Alice signs up and creates a workspace.
   await alice.goto(B);
-  await alice.getByRole('tab', { name: 'Create account' }).click();
+  await alice.getByRole('heading', { name: 'Set up Cloud Doc' }).waitFor();
+  await shot(alice, 'ui-setup');
   await alice.getByLabel('Email').fill(aliceEmail);
   await alice.getByLabel(/^Name/).fill('Alice');
   await alice.getByRole('textbox', { name: 'Password' }).fill('correct horse battery');
   await btn(alice, 'Create account').click();
   await alice.getByLabel('Workspace name').fill('Acme');
   await btn(alice, 'Create').click();
-  await alice.getByText('General', { exact: true }).waitFor();
+  await nav(alice).getByText('General', { exact: true }).waitFor();
+  console.log('✓ first account set up as admin, workspace created');
 
-  // A page in General.
+  // --- her own WebDAV storage ---
+  await userMenu(alice, 'Storage');
+  const dlg = alice.getByRole('dialog');
+  await dlg.getByPlaceholder('My drive').fill('Home drive');
+  await dlg.getByLabel('WebDAV folder URL').fill(`${dav.url}/alice`);
+  await dlg.getByLabel('Username').fill(dav.user);
+  await dlg.getByLabel('Password', { exact: true }).fill(dav.pass);
+  await btn(alice, 'Test').click();
+  await dlg.getByText('Connected').waitFor();
+  await btn(alice, 'Save').click();
+  await dlg.getByText('Default', { exact: true }).waitFor();
+  await shot(alice, 'ui-storage');
+  await alice.keyboard.press('Escape');
+  console.log('✓ storage added and tested');
+
+  // --- a page with an emoji, text and uploads from the tree ---
   await newPage(alice, 'General');
   await alice.fill('.title', 'Roadmap');
+  await alice.getByRole('button', { name: 'Add icon' }).click();
+  await alice.locator('.emoji', { hasText: '🚀' }).click();
+  await treeRow(alice, 'Roadmap').locator('.tree-icon', { hasText: '🚀' }).waitFor();
   await alice.click('.bn-editor');
   await alice.keyboard.type('Ship the beta in March.');
-  console.log('✓ sign up, workspace, first page');
+  await treeRow(alice, 'Roadmap').hover();
+  await alice.getByRole('button', { name: 'Actions for Roadmap' }).click();
+  const chooser = alice.waitForEvent('filechooser');
+  await alice.getByRole('menuitem', { name: 'Upload file…' }).click();
+  await (await chooser).setFiles([`${SHOTS}/diagram.png`, `${SHOTS}/checklist.pdf`]);
+  await alice.waitForFunction(() => [...document.querySelectorAll('.bn-editor img')].some((i) => i.complete && i.naturalWidth > 0), null, { timeout: 15000 });
+  await alice.locator('.bn-editor iframe.pdf-frame').waitFor({ timeout: 10000 });
+  assert.ok([...dav.files.keys()].some((k) => k.startsWith('/alice/cloud-doc/') && k.endsWith('diagram.png')), 'image stored in her WebDAV');
+  await alice.waitForTimeout(800);
+  await shot(alice, 'ui-page-media');
+  console.log('✓ emoji icon; image and PDF uploaded from the tree render in the page');
 
-  // Add Bob before he has an account.
-  await alice.click('.brand');
+  // --- admin: a registration link for Bob ---
+  await userMenu(alice, 'Admin');
+  await alice.getByRole('tab', { name: 'Registration links' }).click();
+  await alice.getByLabel('For email (optional)').fill(bobEmail);
+  await btn(alice, 'Create link').click();
+  const regUrl = await alice.locator('.link-url').first().textContent();
+  assert.match(regUrl, /\/register\//);
+  await shot(alice, 'ui-admin-links');
+  await alice.getByRole('tab', { name: 'Users' }).click();
+  await alice.locator('.user-card').filter({ hasText: 'Alice' }).waitFor();
+  await shot(alice, 'ui-admin-users');
+  await alice.keyboard.press('Escape');
+  // ...and adds him to the workspace before he has an account.
+  await alice.locator('.ws-switch').click();
   await alice.getByRole('menuitem', { name: 'Workspace settings' }).click();
   await alice.getByLabel('Add by email').fill(bobEmail);
   await btn(alice, 'Add').click();
   await alice.getByText('has no account yet').waitFor();
-  await shot(alice, 'ui-workspace-settings');
   await alice.keyboard.press('Escape');
-  console.log('✓ invite by email');
+  console.log('✓ admin: registration link, users list, workspace invite');
 
-  // Bob signs up and lands in Acme with the page.
+  // --- Bob registers through the link ---
   const bob = await ctx('bob');
   await bob.goto(B);
-  await bob.getByRole('tab', { name: 'Create account' }).click();
-  await bob.getByLabel('Email').fill(bobEmail);
+  await bob.getByRole('heading', { name: 'Sign in' }).waitFor();
+  assert.equal(await bob.getByRole('tab', { name: 'Create account' }).count(), 0, 'no open sign-up');
+  await bob.goto(regUrl);
+  await bob.getByRole('heading', { name: 'Create your account' }).waitFor();
+  assert.equal(await bob.getByLabel('Email').inputValue(), bobEmail);
   await bob.getByLabel(/^Name/).fill('Bob');
   await bob.getByRole('textbox', { name: 'Password' }).fill('correct horse battery');
   await btn(bob, 'Create account').click();
-  await bob.getByText('Roadmap').click();
+  await treeRow(bob, 'Roadmap').click();
   await editorHas(bob, 'Ship the beta in March.');
-  await bob.click('.bn-editor');
-  await bob.keyboard.press('Control+End');
+  await bob.waitForFunction(() => [...document.querySelectorAll('.bn-editor img')].some((i) => i.complete && i.naturalWidth > 0), null, { timeout: 10000 });
+  await bob.click('.bn-editor p >> nth=0');
+  await bob.keyboard.press('End');
   await bob.keyboard.press('Enter');
   await bob.keyboard.type('Bob: docs need a pass first.');
   await editorHas(alice, 'docs need a pass');
-  console.log('✓ invited user joins on sign-up; live co-editing');
+  console.log('✓ registration link → account → workspace; images readable; live co-editing');
 
-  // Comments: Bob quotes a selection; Alice sees it live, replies, resolves.
-  await alice.getByRole('button', { name: 'Comments' }).click();
-  await bob.getByRole('button', { name: 'Comments' }).click();
+  // --- comment from the formatting toolbar ---
   await bob.locator('.bn-editor').getByText('Ship the beta in March.').dblclick();
-  await bob.getByRole('button', { name: 'Quote selection' }).click();
-  await bob.getByPlaceholder('Add a comment…').fill('Is March realistic?');
-  await btn(bob, 'Comment').click();
+  await bob.locator('.bn-formatting-toolbar').getByRole('button', { name: 'Comment' }).click();
+  const panel = bob.locator('.side-panel');
+  await panel.getByPlaceholder('Add a comment…').fill('Is March realistic?');
+  await panel.getByRole('button', { name: 'Comment', exact: true }).click();
+  await alice.getByRole('button', { name: 'Comments' }).click();
   await alice.getByText('Is March realistic?').waitFor({ timeout: 8000 });
   await alice.getByPlaceholder('Reply…').fill('Yes if docs land by Feb.');
   await btn(alice, 'Reply').click();
@@ -93,66 +161,101 @@ const run = Date.now().toString(36);
   await shot(bob, 'ui-comments');
   await btn(alice, 'Resolve').click();
   await alice.getByText('No open comments.').waitFor();
-  console.log('✓ comments: quote, live updates, reply, resolve');
+  console.log('✓ comments: toolbar button quotes the selection, live reply, resolve');
 
-  // History: save, change, restore; Bob sees the restore live.
+  // --- history in Alice's storage ---
   await alice.getByRole('button', { name: 'History' }).click();
   await btn(alice, 'Save a version now').click();
   await alice.locator('.version').first().waitFor();
-  await alice.click('.bn-editor');
-  await alice.keyboard.press('Control+End');
+  await alice.click('.bn-editor p >> nth=0');
+  await alice.keyboard.press('End');
   await alice.keyboard.press('Enter');
   await alice.keyboard.type('Temporary note to undo.');
   await editorHas(bob, 'Temporary note to undo.');
   await alice.locator('.version').filter({ hasText: 'Saved' }).first().click();
   await alice.getByRole('dialog').locator('.bn-editor').getByText('Ship the beta in March.').waitFor();
-  await alice.waitForTimeout(400); // let the dialog finish opening
-  await shot(alice, 'ui-history-preview');
   await btn(alice, 'Restore this version').click();
   await bob.waitForFunction(() => !document.querySelector('.bn-editor')?.textContent.includes('Temporary note to undo.'), null, { timeout: 10000 });
+  assert.ok([...dav.files.keys()].some((k) => k.endsWith('.ydoc')), 'history stored in her WebDAV');
   console.log('✓ history: save, preview, restore reaches other editors');
 
-  // A private project Bob can't see.
-  await btn(alice, '+ New project').click();
+  // --- files panel ---
+  await alice.getByRole('button', { name: 'Files' }).click();
+  await alice.locator('.side-panel').getByText('diagram.png').waitFor();
+  await alice.locator('.side-panel').getByText('checklist.pdf').waitFor();
+  console.log('✓ files panel lists the uploads');
+
+  // --- tree: drag a page into another, reorder ---
+  await newPage(alice, 'General');
+  await alice.fill('.title', 'Launch notes');
+  await treeRow(alice, 'Launch notes').waitFor();
+  await treeRow(alice, 'Launch notes').dragTo(treeRow(alice, 'Roadmap'));
+  await alice.waitForFunction(() => {
+    const roadmap = [...document.querySelectorAll('.navbar [role=treeitem]')].find((e) => e.querySelector('.tree-title')?.textContent === 'Roadmap');
+    return roadmap?.querySelector('[role=group] .tree-title')?.textContent === 'Launch notes';
+  });
+  await shot(alice, 'ui-tree');
+  await alice.reload();
+  await treeRow(alice, 'Launch notes').waitFor();
+  assert.equal(await alice.locator('[role=treeitem]:has(> .tree-row:has-text("Roadmap")) [role=group]').getByText('Launch notes').count(), 1, 'move saved');
+  console.log('✓ tree: drag and drop moves a page under another, kept after reload');
+
+  // --- private project hidden from Bob, shared by link ---
+  await btn(alice, 'New project').click();
   await alice.getByRole('dialog').getByLabel('Name').fill('Leadership');
   await alice.getByRole('dialog').getByLabel('Who has access').click();
   await alice.getByRole('option', { name: 'Private: only people added below' }).click();
   await alice.getByRole('dialog').getByRole('button', { name: 'Create' }).click();
-  await alice.locator('.sidebar').getByText('Leadership', { exact: true }).waitFor();
+  await nav(alice).getByText('Leadership', { exact: true }).waitFor();
   await newPage(alice, 'Leadership');
   await alice.fill('.title', 'Hiring plan');
   await alice.click('.bn-editor');
   await alice.keyboard.type('Two engineers in Q2.');
   await bob.reload();
-  await bob.locator('.sidebar').getByText('General', { exact: true }).waitFor();
-  assert.equal(await bob.locator('.sidebar').getByText('Leadership', { exact: true }).count(), 0, 'private project hidden from Bob');
-  console.log('✓ private project hidden from other members');
-
-  // Publish: a view link opened by a signed-out visitor.
+  await nav(bob).getByText('General', { exact: true }).waitFor();
+  assert.equal(await nav(bob).getByText('Leadership', { exact: true }).count(), 0, 'private project hidden from Bob');
   await btn(alice, 'Share').click();
   await btn(alice, 'Create link').click();
   const url = await alice.getByRole('dialog').locator('input[value^="http"]').first().inputValue();
-  await shot(alice, 'ui-share');
   await alice.keyboard.press('Escape');
   const visitor = await ctx('visitor');
   await visitor.goto(url);
-  await visitor.waitForSelector('.title');
   await editorHas(visitor, 'Two engineers in Q2.');
-  await visitor.waitForFunction(() => document.querySelector('.title')?.value === 'Hiring plan', null, { timeout: 8000 });
   assert.equal(await visitor.getAttribute('.bn-editor', 'contenteditable'), 'false', 'visitor is read-only');
   assert.equal(await btn(visitor, 'Share').count(), 0);
-  await visitor.getByText('Live · read only').waitFor();
-  assert.equal(await btn(visitor, 'History').count(), 0, 'no history through a link');
-  assert.equal(await btn(visitor, 'Comments').count(), 0, 'no comments through a view link');
-  await shot(visitor, 'ui-public-view');
-  console.log('✓ public link: signed-out visitor reads, cannot edit');
+  assert.equal(await visitor.getByRole('button', { name: 'History' }).count(), 0, 'no history through a link');
+  console.log('✓ private project hidden; public link is read-only');
 
-  await shot(alice, 'ui-alice');
+  // --- phone ---
+  const phone = await ctx('phone', { ...devices['iPhone 13'] });
+  await phone.goto(B);
+  await phone.getByLabel('Email').fill(bobEmail);
+  await phone.getByRole('textbox', { name: 'Password' }).fill('correct horse battery');
+  await btn(phone, 'Sign in').click();
+  await btn(phone, 'Pages').click();
+  await treeRow(phone, 'Roadmap').waitFor();
+  await phone.waitForTimeout(300);
+  await shot(phone, 'ui-phone-tree');
+  await treeRow(phone, 'Roadmap').locator('.tree-title').click();
+  await editorHas(phone, 'Ship the beta in March.');
+  await phone.waitForFunction(() => [...document.querySelectorAll('.bn-editor img')].some((i) => i.complete && i.naturalWidth > 0), null, { timeout: 10000 });
+  assert.ok(await phone.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), 'no sideways scrolling');
+  await phone.waitForTimeout(500);
+  await shot(phone, 'ui-phone-page');
+  await phone.getByRole('button', { name: 'Page actions' }).click();
+  await phone.getByRole('menuitem', { name: 'Comments' }).click();
+  await phone.getByRole('dialog').getByText('Resolved').waitFor();
+  await phone.waitForTimeout(400);
+  await shot(phone, 'ui-phone-comments');
+  console.log('✓ phone: drawer navigation, page with media, panels as bottom sheets');
+
   console.log('errors:', errors);
   assert.equal(errors.length, 0);
   console.log('\nUI walk-through passed');
+  dav.close();
   await browser.close();
-})().catch((e) => {
-  console.error('FAILED:', e.message.split('\n').slice(0, 6).join('\n'));
+})().catch(async (e) => {
+  console.error('FAILED:', e.message.split('\n').slice(0, 8).join('\n'));
+  for (const [label, p] of opened) await p.screenshot({ path: `${SHOTS}/failed-${label}.png` }).catch(() => {});
   process.exit(1);
 });

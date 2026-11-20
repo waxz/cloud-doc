@@ -1,10 +1,44 @@
-import { ActionIcon, Button, Group, Menu, Modal, ScrollArea, Stack, Text, TextInput, Tooltip, UnstyledButton } from '@mantine/core';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  ActionIcon,
+  AppShell,
+  Avatar,
+  Burger,
+  Button,
+  Group,
+  Menu,
+  Modal,
+  ScrollArea,
+  Stack,
+  Text,
+  TextInput,
+  Tooltip,
+  UnstyledButton,
+  useMantineColorScheme,
+} from '@mantine/core';
+import { useDisclosure, useMediaQuery } from '@mantine/hooks';
+import {
+  IconChevronDown,
+  IconLogout,
+  IconMoon,
+  IconPlus,
+  IconSearch,
+  IconSelector,
+  IconSettings,
+  IconShieldLock,
+  IconSun,
+  IconDatabase,
+  IconUsersGroup,
+  IconX,
+} from '@tabler/icons-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AdminPanel } from './AdminPanel';
 import { api, atLeast, type Me, type Page, type Project, type SearchHit, type Workspace } from './api';
+import { PageTree } from './PageTree';
 import { PageView } from './PageView';
 import { href, navigate } from './route';
 import { ProjectSettings, WorkspaceSettings } from './Settings';
-import { errorText } from './util';
+import { UserSettings } from './UserSettings';
+import { colorFor, errorText } from './util';
 
 interface Props {
   me: Me;
@@ -17,6 +51,9 @@ interface Props {
 }
 
 export function Shell({ me, workspace, pageId, dark, onMeChanged, onSignOut, onError }: Props) {
+  const [navOpen, nav] = useDisclosure(false);
+  const phone = useMediaQuery('(max-width: 48em)');
+  const { toggleColorScheme } = useMantineColorScheme();
   const [projects, setProjects] = useState<Project[]>([]);
   const [pages, setPages] = useState<Record<string, Page[]>>({});
   const [query, setQuery] = useState('');
@@ -24,6 +61,12 @@ export function Shell({ me, workspace, pageId, dark, onMeChanged, onSignOut, onE
   const [wsSettings, setWsSettings] = useState(false);
   const [projectDialog, setProjectDialog] = useState<{ project: Project | null } | null>(null);
   const [newWorkspace, setNewWorkspace] = useState(false);
+  const [userSettings, setUserSettings] = useState<'profile' | 'storage' | null>(null);
+  const [admin, setAdmin] = useState(false);
+  /** Files picked from the tree's "Upload file…", handed to the page once it's open. */
+  const [pendingUpload, setPendingUpload] = useState<{ pageId: string; files: File[] } | null>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const uploadTarget = useRef<string | null>(null);
   const wid = workspace.id;
 
   const refresh = useCallback(async () => {
@@ -57,6 +100,7 @@ export function Shell({ me, workspace, pageId, dark, onMeChanged, onSignOut, onE
   const open = (id: string | null) => {
     navigate(href.workspace(wid, id ?? undefined));
     setQuery('');
+    nav.close();
   };
 
   const createPage = async (projectId: string, parentId: string | null) => {
@@ -84,62 +128,89 @@ export function Shell({ me, workspace, pageId, dark, onMeChanged, onSignOut, onE
     }
   };
 
-  const onTitle = useCallback(
-    (id: string, title: string) =>
-      setPages((m) => Object.fromEntries(Object.entries(m).map(([k, list]) => [k, list.map((p) => (p.id === id ? { ...p, title } : p))]))),
+  const movePage = async (page: Page, parentId: string | null, position?: number) => {
+    // Show it right away; the server's answer (or a reload on error) settles it.
+    setPages((m) => ({
+      ...m,
+      [page.project_id]: (m[page.project_id] ?? []).map((p) => (p.id === page.id ? { ...p, parent_id: parentId, position: position ?? Number.MAX_SAFE_INTEGER } : p)),
+    }));
+    try {
+      const moved = await api.movePage(page.id, parentId, position);
+      // Only the placement: the title and icon here are fresher than the saved ones.
+      setPages((m) => ({
+        ...m,
+        [page.project_id]: (m[page.project_id] ?? []).map((p) => (p.id === page.id ? { ...p, parent_id: moved.parent_id, position: moved.position } : p)),
+      }));
+    } catch (e) {
+      onError(errorText(e));
+      refresh();
+    }
+  };
+
+  const patchPage = useCallback(
+    (id: string, patch: Partial<Page>) =>
+      setPages((m) => Object.fromEntries(Object.entries(m).map(([k, list]) => [k, list.map((p) => (p.id === id ? { ...p, ...patch } : p))]))),
     []
   );
+  const onTitle = useCallback((id: string, title: string) => patchPage(id, { title }), [patchPage]);
+  const onIcon = useCallback((id: string, icon: string) => patchPage(id, { icon }), [patchPage]);
 
   const projectName = useMemo(() => Object.fromEntries(projects.map((p) => [p.id, p.name])), [projects]);
-
-  const tree = (project: Project, parentId: string | null, depth: number): React.ReactNode =>
-    (pages[project.id] ?? [])
-      .filter((p) => p.parent_id === parentId)
-      .map((p) => (
-        <div key={p.id}>
-          <div className={p.id === pageId ? 'item active' : 'item'} style={{ paddingLeft: 10 + depth * 14 }} onClick={() => open(p.id)}>
-            <span className="item-title">{p.title || 'Untitled'}</span>
-            {atLeast(project.role, 'editor') && (
-              <span className="item-actions">
-                <button title="Add subpage" onClick={(e) => (e.stopPropagation(), createPage(project.id, p.id))}>
-                  +
-                </button>
-                <button title="Delete" onClick={(e) => (e.stopPropagation(), deletePage(p))}>
-                  ×
-                </button>
-              </span>
-            )}
-          </div>
-          {tree(project, p.id, depth + 1)}
-        </div>
-      ));
+  const linkFor = useCallback((id: string) => href.workspace(wid, id), [wid]);
+  const burger = phone ? <Burger opened={navOpen} onClick={nav.toggle} size="sm" aria-label="Pages" /> : null;
 
   return (
-    <div className="app">
-      <aside className="sidebar">
-        <Menu position="bottom-start" width={240}>
-          <Menu.Target>
-            <UnstyledButton className="brand">
-              {workspace.name} <span className="muted">▾</span>
-            </UnstyledButton>
-          </Menu.Target>
-          <Menu.Dropdown>
-            <Menu.Label>Workspaces</Menu.Label>
-            {me.workspaces.map((w) => (
-              <Menu.Item key={w.id} onClick={() => navigate(href.workspace(w.id))} fw={w.id === wid ? 600 : 400}>
-                {w.name}
-              </Menu.Item>
-            ))}
-            <Menu.Item onClick={() => setNewWorkspace(true)}>+ New workspace</Menu.Item>
-            <Menu.Divider />
-            <Menu.Item onClick={() => setWsSettings(true)}>Workspace settings</Menu.Item>
-            <Menu.Item color="red" onClick={onSignOut}>
-              Sign out
-            </Menu.Item>
-          </Menu.Dropdown>
-        </Menu>
-        <TextInput size="xs" placeholder="Search" value={query} onChange={(e) => setQuery(e.currentTarget.value)} />
-        <ScrollArea style={{ flex: 1 }} type="auto">
+    <AppShell navbar={{ width: 288, breakpoint: 'sm', collapsed: { mobile: !navOpen } }} padding={0}>
+      <AppShell.Navbar className="navbar">
+        <AppShell.Section p="xs" pb={4}>
+          <Group gap={4} wrap="nowrap">
+            <Menu position="bottom-start" width={260} withinPortal>
+              <Menu.Target>
+                <UnstyledButton className="ws-switch" style={{ flex: 1, minWidth: 0 }}>
+                  <Avatar size={26} radius="sm" color={colorFor(wid)} variant="filled">
+                    {workspace.name.slice(0, 1).toUpperCase()}
+                  </Avatar>
+                  <Text fw={600} size="sm" truncate="end" style={{ flex: 1 }}>
+                    {workspace.name}
+                  </Text>
+                  <IconSelector size={14} />
+                </UnstyledButton>
+              </Menu.Target>
+              <Menu.Dropdown>
+                <Menu.Label>Workspaces</Menu.Label>
+                {me.workspaces.map((w) => (
+                  <Menu.Item key={w.id} onClick={() => navigate(href.workspace(w.id))} fw={w.id === wid ? 600 : 400}>
+                    {w.name}
+                  </Menu.Item>
+                ))}
+                {(me.canCreateWorkspaces || me.user.role === 'admin') && (
+                  <Menu.Item leftSection={<IconPlus size={15} />} onClick={() => setNewWorkspace(true)}>
+                    New workspace
+                  </Menu.Item>
+                )}
+                <Menu.Divider />
+                <Menu.Item leftSection={<IconUsersGroup size={15} />} onClick={() => setWsSettings(true)}>
+                  Workspace settings
+                </Menu.Item>
+              </Menu.Dropdown>
+            </Menu>
+            {phone && (
+              <ActionIcon variant="subtle" color="gray" onClick={nav.close} aria-label="Close pages">
+                <IconX size={18} />
+              </ActionIcon>
+            )}
+          </Group>
+          <TextInput
+            mt={8}
+            size="sm"
+            placeholder="Search pages"
+            leftSection={<IconSearch size={15} />}
+            value={query}
+            onChange={(e) => setQuery(e.currentTarget.value)}
+            rightSection={query && <IconX size={14} style={{ cursor: 'pointer' }} onClick={() => setQuery('')} />}
+          />
+        </AppShell.Section>
+        <AppShell.Section grow component={ScrollArea} px="xs" type="auto">
           {hits ? (
             <Stack gap={2}>
               {hits.length === 0 && (
@@ -159,62 +230,134 @@ export function Shell({ me, workspace, pageId, dark, onMeChanged, onSignOut, onE
           ) : (
             projects.map((project) => (
               <div key={project.id} className="project">
-                <Group justify="space-between" className="project-head" wrap="nowrap">
-                  <Text size="xs" fw={600} c="dimmed" tt="uppercase" truncate>
+                <Group justify="space-between" className="project-head" wrap="nowrap" gap={0}>
+                  <Text size="xs" fw={600} c="dimmed" tt="uppercase" truncate="end">
                     {project.name}
                   </Text>
                   <Group gap={0} wrap="nowrap" className="project-actions">
-                    {atLeast(project.role, 'editor') && (
-                      <Tooltip label="New page">
-                        <ActionIcon size="sm" variant="subtle" color="gray" onClick={() => createPage(project.id, null)} aria-label={`New page in ${project.name}`}>
-                          +
-                        </ActionIcon>
-                      </Tooltip>
-                    )}
                     {atLeast(project.role, 'admin') && (
                       <Tooltip label="Project settings">
                         <ActionIcon size="sm" variant="subtle" color="gray" onClick={() => setProjectDialog({ project })} aria-label={`Settings for ${project.name}`}>
-                          ⚙
+                          <IconSettings size={14} />
+                        </ActionIcon>
+                      </Tooltip>
+                    )}
+                    {atLeast(project.role, 'editor') && (
+                      <Tooltip label="New page">
+                        <ActionIcon size="sm" variant="subtle" color="gray" onClick={() => createPage(project.id, null)} aria-label={`New page in ${project.name}`}>
+                          <IconPlus size={14} />
                         </ActionIcon>
                       </Tooltip>
                     )}
                   </Group>
                 </Group>
-                {tree(project, null, 0)}
-                {(pages[project.id] ?? []).length === 0 && (
-                  <Text size="xs" c="dimmed" px={10} py={4}>
-                    No pages yet
-                  </Text>
-                )}
+                <PageTree
+                  projectId={project.id}
+                  pages={pages[project.id] ?? []}
+                  canEdit={atLeast(project.role, 'editor')}
+                  activeId={pageId}
+                  linkFor={linkFor}
+                  onOpen={open}
+                  onCreate={(parentId) => createPage(project.id, parentId)}
+                  onDelete={deletePage}
+                  onMove={movePage}
+                  onUpload={(p) => {
+                    uploadTarget.current = p.id;
+                    fileInput.current?.click();
+                  }}
+                />
               </div>
             ))
           )}
-        </ScrollArea>
-        <button className="new" onClick={() => setProjectDialog({ project: null })}>
-          + New project
-        </button>
-        <div className="me" title={me.user.email}>
-          {me.user.name}
-        </div>
-      </aside>
-      <main className="main">
+          <Button variant="subtle" color="gray" size="compact-sm" leftSection={<IconPlus size={14} />} onClick={() => setProjectDialog({ project: null })} my="xs">
+            New project
+          </Button>
+        </AppShell.Section>
+        <AppShell.Section p="xs" className="nav-footer">
+          <Menu position="top-start" width={240} withinPortal>
+            <Menu.Target>
+              <UnstyledButton className="me-button">
+                <Avatar size={28} radius="xl" color={colorFor(me.user.id)} variant="filled">
+                  {me.user.name.slice(0, 1).toUpperCase()}
+                </Avatar>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <Text size="sm" fw={500} truncate="end">
+                    {me.user.name}
+                  </Text>
+                  <Text size="xs" c="dimmed" truncate="end">
+                    {me.user.email}
+                  </Text>
+                </div>
+                <IconChevronDown size={14} />
+              </UnstyledButton>
+            </Menu.Target>
+            <Menu.Dropdown>
+              <Menu.Item leftSection={<IconSettings size={15} />} onClick={() => setUserSettings('profile')}>
+                Settings
+              </Menu.Item>
+              <Menu.Item leftSection={<IconDatabase size={15} />} onClick={() => setUserSettings('storage')}>
+                Storage
+              </Menu.Item>
+              {me.user.role === 'admin' && (
+                <Menu.Item leftSection={<IconShieldLock size={15} />} onClick={() => setAdmin(true)}>
+                  Admin
+                </Menu.Item>
+              )}
+              <Menu.Item leftSection={dark ? <IconSun size={15} /> : <IconMoon size={15} />} onClick={() => toggleColorScheme()}>
+                {dark ? 'Light mode' : 'Dark mode'}
+              </Menu.Item>
+              <Menu.Divider />
+              <Menu.Item color="red" leftSection={<IconLogout size={15} />} onClick={onSignOut}>
+                Sign out
+              </Menu.Item>
+            </Menu.Dropdown>
+          </Menu>
+        </AppShell.Section>
+      </AppShell.Navbar>
+      <AppShell.Main className="main">
         {pageId ? (
           <PageView
             key={pageId}
             pageId={pageId}
             me={me.user}
-            storage={me.storage}
             dark={dark}
-            linkFor={(id) => href.workspace(wid, id)}
+            leading={burger}
+            linkFor={linkFor}
             onTitle={onTitle}
+            onIcon={onIcon}
             onError={onError}
+            pendingUpload={pendingUpload?.pageId === pageId ? pendingUpload.files : undefined}
+            onPendingTaken={() => setPendingUpload(null)}
+            onNeedStorage={() => setUserSettings('storage')}
           />
         ) : (
           <div className="empty">
-            <Text c="dimmed">Pick a page on the left, or start a new one.</Text>
+            {burger && <div className="empty-burger">{burger}</div>}
+            <Stack align="center" gap="xs">
+              <Text c="dimmed">Pick a page, or start a new one.</Text>
+              {projects[0] && atLeast(projects[0].role, 'editor') && (
+                <Button variant="light" leftSection={<IconPlus size={16} />} onClick={() => createPage(projects[0]!.id, null)}>
+                  New page in {projects[0].name}
+                </Button>
+              )}
+            </Stack>
           </div>
         )}
-      </main>
+      </AppShell.Main>
+      <input
+        ref={fileInput}
+        type="file"
+        multiple
+        hidden
+        onChange={(e) => {
+          const files = [...(e.currentTarget.files ?? [])];
+          e.currentTarget.value = '';
+          const target = uploadTarget.current;
+          if (!target || !files.length) return;
+          setPendingUpload({ pageId: target, files });
+          open(target);
+        }}
+      />
       <WorkspaceSettings
         workspace={workspace}
         me={me.user}
@@ -240,7 +383,9 @@ export function Shell({ me, workspace, pageId, dark, onMeChanged, onSignOut, onE
         }}
         onError={onError}
       />
-    </div>
+      <UserSettings opened={!!userSettings} tab={userSettings ?? 'profile'} onClose={() => setUserSettings(null)} onChanged={onMeChanged} onError={onError} />
+      {me.user.role === 'admin' && <AdminPanel me={me.user} opened={admin} onClose={() => setAdmin(false)} onError={onError} />}
+    </AppShell>
   );
 }
 

@@ -14,6 +14,7 @@ export interface User {
   id: string;
   email: string;
   name: string;
+  role: 'admin' | 'member';
 }
 export interface Workspace {
   id: string;
@@ -23,8 +24,7 @@ export interface Workspace {
 export interface Me {
   user: User;
   workspaces: Workspace[];
-  /** Whether cloud-drive is connected (uploads and history need it). */
-  storage: boolean;
+  canCreateWorkspaces: boolean;
 }
 export interface Project {
   id: string;
@@ -37,8 +37,69 @@ export interface Page {
   project_id: string;
   parent_id: string | null;
   title: string;
+  icon: string;
   position: number;
   updated_at: number;
+}
+export interface FileInfo {
+  id: string;
+  name: string;
+  mime: string;
+  size: number;
+  owner_id: string;
+  created_at: number;
+  url: string;
+}
+export interface Storage {
+  id: string;
+  name: string;
+  url: string;
+  username: string;
+  hasPassword: boolean;
+}
+export interface StorageInput {
+  name?: string;
+  url?: string;
+  username?: string;
+  password?: string;
+}
+export interface Settings {
+  user: User;
+  usage: number;
+  storageLimit: number | null;
+  defaultStorageId: string | null;
+  storages: Storage[];
+  workspaces: { id: string; name: string; storage_id: string | null }[];
+}
+export interface AdminUser {
+  id: string;
+  email: string;
+  name: string;
+  role: 'admin' | 'member';
+  can_create_workspaces: number;
+  storage_limit: number | null;
+  disabled: number;
+  created_at: number;
+  default_storage_id: string | null;
+  default_storage_name: string | null;
+  usage: number;
+}
+export interface UserPatch {
+  name?: string;
+  role?: 'admin' | 'member';
+  canCreateWorkspaces?: boolean;
+  storageLimit?: number | null;
+  disabled?: boolean;
+  password?: string;
+}
+export interface RegistrationLink {
+  token: string;
+  email: string | null;
+  role: 'admin' | 'member';
+  created_at: number;
+  expires_at: number | null;
+  used_at: number | null;
+  used_by_name: string | null;
 }
 export interface PageInfo {
   page: Page;
@@ -131,7 +192,10 @@ const enc = encodeURIComponent;
 
 export const api = {
   me: () => call<Me>('GET', '/api/me'),
-  signup: (email: string, name: string, password: string) => call<Me>('POST', '/api/auth/signup', { email, name, password }),
+  authStatus: () => call<{ setup: boolean }>('GET', '/api/auth/status'),
+  registration: (token: string) => call<{ email: string | null }>('GET', `/api/register/${enc(token)}`),
+  signup: (email: string, name: string, password: string, token?: string) =>
+    call<Me>('POST', '/api/auth/signup', { email, name, password, token }),
   login: (email: string, password: string) => call<Me>('POST', '/api/auth/login', { email, password }),
   logout: () => call<void>('POST', '/api/auth/logout'),
 
@@ -156,7 +220,7 @@ export const api = {
   pages: (pid: string) => call<Page[]>('GET', `/api/projects/${pid}/pages`),
   createPage: (pid: string, parentId: string | null) => call<Page>('POST', `/api/projects/${pid}/pages`, { parentId }),
   page: (id: string) => call<PageInfo>('GET', `/api/pages/${id}`),
-  movePage: (id: string, parentId: string | null) => call<Page>('PATCH', `/api/pages/${id}`, { parentId }),
+  movePage: (id: string, parentId: string | null, position?: number) => call<Page>('PATCH', `/api/pages/${id}`, { parentId, position }),
   deletePage: (id: string) => call<void>('DELETE', `/api/pages/${id}`),
 
   versions: (id: string) => call<Version[]>('GET', `/api/pages/${id}/versions`),
@@ -181,13 +245,35 @@ export const api = {
   deleteShare: (token: string) => call<void>('DELETE', `/api/shares/${token}`),
   openShare: (token: string) => call<OpenedShare>('GET', `/api/share/${token}`),
 
-  async upload(pageId: string, file: File): Promise<string> {
+  settings: () => call<Settings>('GET', '/api/settings'),
+  updateProfile: (patch: { name?: string; currentPassword?: string; newPassword?: string }) => call<void>('PATCH', '/api/settings/profile', patch),
+  storages: (uid: string) => call<Storage[]>('GET', `/api/users/${uid}/storages`),
+  createStorage: (uid: string, s: StorageInput) => call<Storage>('POST', `/api/users/${uid}/storages`, s),
+  updateStorage: (sid: string, s: StorageInput) => call<Storage>('PATCH', `/api/storages/${sid}`, s),
+  deleteStorage: (sid: string) => call<void>('DELETE', `/api/storages/${sid}`),
+  testStorage: (sid: string | null, s: StorageInput) =>
+    call<{ ok: boolean; message: string }>('POST', sid ? `/api/storages/${sid}/test` : '/api/storages/test', s),
+  setDefaultStorage: (uid: string, storageId: string | null) => call<void>('PUT', `/api/users/${uid}/default-storage`, { storageId }),
+  setWorkspaceStorage: (uid: string, wid: string, storageId: string | null) =>
+    call<void>('PUT', `/api/users/${uid}/workspaces/${wid}/storage`, { storageId }),
+
+  adminUsers: () => call<AdminUser[]>('GET', '/api/admin/users'),
+  adminCreateUser: (u: { email: string; name: string; password: string } & UserPatch) => call<{ id: string }>('POST', '/api/admin/users', u),
+  adminUpdateUser: (uid: string, patch: UserPatch) => call<void>('PATCH', `/api/admin/users/${uid}`, patch),
+  adminDeleteUser: (uid: string) => call<void>('DELETE', `/api/admin/users/${uid}`),
+  adminLinks: () => call<RegistrationLink[]>('GET', '/api/admin/links'),
+  adminCreateLink: (l: { email?: string; role?: string; expiresInDays?: number | null }) => call<RegistrationLink>('POST', '/api/admin/links', l),
+  adminDeleteLink: (token: string) => call<void>('DELETE', `/api/admin/links/${enc(token)}`),
+
+  files: (pageId: string) => call<FileInfo[]>('GET', `/api/pages/${pageId}/files`),
+  deleteFile: (fid: string) => call<void>('DELETE', `/api/files/${fid}`),
+  async upload(pageId: string, file: File): Promise<FileInfo> {
     const res = await fetch(`/api/pages/${pageId}/files`, {
       method: 'POST',
       headers: { 'content-type': file.type || 'application/octet-stream', 'x-filename': encodeURIComponent(file.name) },
       body: file,
     });
     if (!res.ok) throw new ApiError(res.status, ((await res.json().catch(() => ({}))) as { error?: string }).error ?? 'upload failed');
-    return ((await res.json()) as { url: string }).url;
+    return (await res.json()) as FileInfo;
   },
 };

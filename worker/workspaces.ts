@@ -8,6 +8,10 @@ import { deletePageTree } from './pages.js';
 
 export async function createWorkspace(req: Request, env: Env, u: User | null): Promise<Response> {
   const user = requireUser(u);
+  if (user.role !== 'admin') {
+    const row = await env.DB.prepare('SELECT can_create_workspaces FROM users WHERE id = ?').bind(user.id).first<{ can_create_workspaces: number }>();
+    if (!row?.can_create_workspaces) throw new HttpError(403, 'your account may not create workspaces');
+  }
   const name = str((await readJson<{ name?: string }>(req)).name, 'name', 80);
   const id = newId();
   const now = Date.now();

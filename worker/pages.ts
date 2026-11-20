@@ -11,12 +11,19 @@ import {
   projectRole,
 } from './access.js';
 import { requireUser, type User } from './auth.js';
-import { driveDelete, driveGet, drivePut } from './drive.js';
+import {
+  checkQuota,
+  deletePageFolders,
+  fileKey,
+  requireStorage,
+  storageById,
+  WebDav,
+  workspaceOfPage,
+} from './storage.js';
 import type { Env } from './env.js';
 import { cookie, HttpError, json, newId, noContent, randomToken, readJson, str } from './http.js';
-import { deleteHistoryFiles } from './page-room.js';
 
-const PAGE_COLS = 'id, project_id, parent_id, title, position, updated_at';
+const PAGE_COLS = 'id, project_id, parent_id, title, icon, position, updated_at';
 
 const room = (env: Env, pageId: string) => getServerByName(env.PageRoom, pageId);
 
@@ -70,7 +77,10 @@ export async function getPage(req: Request, env: Env, u: User | null, id: string
 export async function createPage(req: Request, env: Env, u: User | null, pid: string): Promise<Response> {
   const user = requireUser(u);
   await requireProject(env, user, pid, 'editor');
-  const { parentId = null } = await readJson<{ parentId?: string | null }>(req);
+  // `position` places it among its new siblings (the client sends the midpoint
+  // between its neighbours); without it the page goes last.
+  const { parentId = null, position } = await readJson<{ parentId?: string | null; position?: number }>(req);
+  if (position !== undefined && !Number.isFinite(position)) throw new HttpError(400, 'position must be a number');
   if (parentId) {
     const parent = await env.DB.prepare('SELECT project_id FROM pages WHERE id = ?').bind(parentId).first<{ project_id: string }>();
     if (parent?.project_id !== pid) throw new HttpError(400, 'parent page is not in this project');
@@ -90,7 +100,10 @@ export async function movePage(req: Request, env: Env, u: User | null, id: strin
   const user = requireUser(u);
   const { page } = await requirePage(req, env, user, id, 'editor');
   await requireProject(env, user, page.project_id, 'editor');
-  const { parentId = null } = await readJson<{ parentId?: string | null }>(req);
+  // `position` places it among its new siblings (the client sends the midpoint
+  // between its neighbours); without it the page goes last.
+  const { parentId = null, position } = await readJson<{ parentId?: string | null; position?: number }>(req);
+  if (position !== undefined && !Number.isFinite(position)) throw new HttpError(400, 'position must be a number');
   if (parentId) {
     const parent = await env.DB.prepare('SELECT project_id FROM pages WHERE id = ?').bind(parentId).first<{ project_id: string }>();
     if (parent?.project_id !== page.project_id) throw new HttpError(400, 'pages can only move within their project');
@@ -104,10 +117,10 @@ export async function movePage(req: Request, env: Env, u: User | null, id: strin
   }
   const row = await env.DB.prepare(
     `UPDATE pages SET parent_id = ?,
-       position = (SELECT COALESCE(MAX(position), 0) + 1 FROM pages WHERE project_id = ? AND parent_id IS ?)
+       position = COALESCE(?, (SELECT COALESCE(MAX(position), 0) + 1 FROM pages WHERE project_id = ? AND parent_id IS ?))
      WHERE id = ? RETURNING ${PAGE_COLS}`
   )
-    .bind(parentId, page.project_id, parentId, id)
+    .bind(parentId, position ?? null, page.project_id, parentId, id)
     .first();
   return json(row);
 }
@@ -121,6 +134,9 @@ export async function deletePageTree(env: Env, id: string): Promise<void> {
     .bind(id)
     .all<{ id: string }>();
   const ids = results.map((r) => r.id);
+  // Files and history first, while their rows still say which storages hold them.
+  const workspaceId = await workspaceOfPage(env, id);
+  for (const pid of ids) await deletePageFolders(env, workspaceId, pid);
   await env.DB.batch([
     ...ids.map((pid) => env.DB.prepare('DELETE FROM pages_fts WHERE page_id = ?').bind(pid)),
     env.DB.prepare('DELETE FROM pages WHERE id = ?').bind(id), // the rest follows via ON DELETE CASCADE
@@ -128,8 +144,6 @@ export async function deletePageTree(env: Env, id: string): Promise<void> {
   for (const pid of ids) {
     const stub = await room(env, pid);
     await stub.fetch(new Request('http://room/', { method: 'DELETE' }));
-    await driveDelete(env, `files/${pid}`);
-    await deleteHistoryFiles(env, pid);
   }
 }
 
@@ -165,36 +179,104 @@ export async function search(env: Env, u: User | null, wid: string, q: string): 
   return json(results);
 }
 
-// ---------- files (stored in cloud-drive under files/<pageId>/) ----------
+// ---------- files (in the uploader's storage for the workspace) ----------
 
-export async function uploadFile(req: Request, env: Env, u: User | null, id: string): Promise<Response> {
-  await requirePage(req, env, u, id, 'editor');
-  const raw = decodeURIComponent(req.headers.get('x-filename') ?? 'file');
-  const name = raw.replace(/[^\w.\- ]+/g, '_').slice(-100) || 'file';
-  const key = `${crypto.randomUUID()}-${name}`;
-  await drivePut(
-    env,
-    `files/${id}/${key}`,
-    req.body,
-    req.headers.get('content-type') ?? 'application/octet-stream',
-    req.headers.get('content-length')
-  );
-  return json({ url: `/api/pages/${id}/files/${encodeURIComponent(key)}` }, 201);
+const FILE_COLS = 'id, page_id, owner_id, name, mime, size, created_at';
+const fileUrl = (id: string, name: string) => `/api/files/${id}/${encodeURIComponent(name)}`;
+
+interface FileRow {
+  id: string;
+  page_id: string;
+  owner_id: string | null;
+  storage_id: string | null;
+  key: string;
+  name: string;
+  mime: string;
+  size: number;
+  created_at: number;
 }
 
-export async function downloadFile(req: Request, env: Env, u: User | null, id: string, key: string): Promise<Response> {
+const publicFile = (f: Omit<FileRow, 'storage_id' | 'key'>) => ({
+  id: f.id,
+  name: f.name,
+  mime: f.mime,
+  size: f.size,
+  owner_id: f.owner_id,
+  created_at: f.created_at,
+  url: fileUrl(f.id, f.name),
+});
+
+export async function uploadFile(req: Request, env: Env, u: User | null, id: string): Promise<Response> {
+  const user = requireUser(u);
+  await requirePage(req, env, user, id, 'editor');
+  // The size is needed up front to check the storage limit.
+  const size = Number(req.headers.get('content-length'));
+  if (!Number.isFinite(size) || size <= 0) throw new HttpError(411, 'uploads need a Content-Length');
+  const workspaceId = await workspaceOfPage(env, id);
+  const storage = await requireStorage(env, user.id, workspaceId);
+  await checkQuota(env, user.id, size);
+  const raw = decodeURIComponent(req.headers.get('x-filename') ?? 'file');
+  const name = raw.replace(/[/\\\u0000-\u001f]+/g, '_').trim().slice(-120) || 'file';
+  const mime = (req.headers.get('content-type') ?? 'application/octet-stream').split(';')[0]!.trim() || 'application/octet-stream';
+  const fileId = newId();
+  const key = fileKey(workspaceId, id, fileId, name.replace(/[^\w.\- ]+/g, '_'));
+  await new WebDav(storage).put(key, req.body, mime, String(size));
+  const row = { id: fileId, page_id: id, owner_id: user.id, name, mime, size, created_at: Date.now() };
+  await env.DB.prepare(
+    'INSERT INTO files (id, page_id, owner_id, storage_id, key, name, mime, size, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  )
+    .bind(fileId, id, user.id, storage.id, key, name, mime, size, row.created_at)
+    .run();
+  await tellRoom(env, id, '/notify', { type: 'files' });
+  return json(publicFile(row), 201);
+}
+
+export async function listFiles(req: Request, env: Env, u: User | null, id: string): Promise<Response> {
   await requirePage(req, env, u, id, 'viewer');
-  if (key.includes('/')) throw new HttpError(400, 'bad file name');
-  const res = await driveGet(env, `files/${id}/${key}`, req.headers.get('range'));
-  if (!res.ok && res.status !== 206) throw new HttpError(res.status === 404 ? 404 : 502, 'file not available');
+  const { results } = await env.DB.prepare(`SELECT ${FILE_COLS} FROM files WHERE page_id = ? ORDER BY created_at DESC`)
+    .bind(id)
+    .all<FileRow>();
+  return json(results.map(publicFile));
+}
+
+async function loadFile(env: Env, fid: string): Promise<FileRow> {
+  const row = await env.DB.prepare('SELECT * FROM files WHERE id = ?').bind(fid).first<FileRow>();
+  if (!row) throw new HttpError(404, 'no such file');
+  return row;
+}
+
+/** Streams a file (with Range support, so video can seek) to anyone who can read its page. */
+export async function downloadFile(req: Request, env: Env, u: User | null, fid: string): Promise<Response> {
+  const f = await loadFile(env, fid);
+  await requirePage(req, env, u, f.page_id, 'viewer');
+  const storage = await storageById(env, f.storage_id);
+  if (!storage) throw new HttpError(410, 'the storage holding this file was removed');
+  const res = await new WebDav(storage).get(f.key, req.headers.get('range'));
+  if (!res.ok && res.status !== 206) throw new HttpError(res.status === 404 ? 404 : 502, 'file not available from its storage');
   const headers = new Headers();
-  for (const h of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'etag', 'last-modified']) {
+  for (const h of ['content-length', 'content-range', 'accept-ranges', 'etag', 'last-modified']) {
     const v = res.headers.get(h);
     if (v) headers.set(h, v);
   }
-  // Keys are unique per upload, so the content never changes.
+  headers.set('content-type', f.mime);
+  headers.set('content-disposition', `inline; filename*=UTF-8''${encodeURIComponent(f.name)}`);
+  headers.set('x-content-type-options', 'nosniff');
+  // Ids are unique per upload, so the content never changes.
   headers.set('cache-control', 'private, max-age=31536000, immutable');
   return new Response(res.body, { status: res.status, headers });
+}
+
+/** The uploader or a project admin removes a file from the page and its storage. */
+export async function deleteFile(req: Request, env: Env, u: User | null, fid: string): Promise<Response> {
+  const user = requireUser(u);
+  const f = await loadFile(env, fid);
+  const { role } = await requirePage(req, env, user, f.page_id, 'editor');
+  if (f.owner_id !== user.id && !atLeast(role, 'admin')) throw new HttpError(403, 'only the uploader or a project admin can delete this file');
+  const storage = await storageById(env, f.storage_id);
+  if (storage) await new WebDav(storage).delete(f.key);
+  await env.DB.prepare('DELETE FROM files WHERE id = ?').bind(fid).run();
+  await tellRoom(env, f.page_id, '/notify', { type: 'files' });
+  return noContent();
 }
 
 // ---------- history ----------
@@ -218,17 +300,20 @@ export async function listVersions(req: Request, env: Env, u: User | null, id: s
 
 export async function saveVersion(req: Request, env: Env, u: User | null, id: string): Promise<Response> {
   await requirePage(req, env, u, id, 'editor');
-  return tellRoom(env, id, '/snapshot', { by: requireUser(u).name });
+  const user = requireUser(u);
+  return tellRoom(env, id, '/snapshot', { by: user.name, userId: user.id });
 }
 
 export async function versionContent(req: Request, env: Env, u: User | null, id: string, vid: string): Promise<Response> {
   await requireHistoryAccess(req, env, u, id);
-  const row = await env.DB.prepare('SELECT storage_key FROM page_versions WHERE id = ? AND page_id = ?')
+  const row = await env.DB.prepare('SELECT storage_key, storage_id FROM page_versions WHERE id = ? AND page_id = ?')
     .bind(vid, id)
-    .first<{ storage_key: string }>();
+    .first<{ storage_key: string; storage_id: string | null }>();
   if (!row) throw new HttpError(404, 'no such version');
-  const res = await driveGet(env, row.storage_key);
-  if (!res.ok) throw new HttpError(502, 'snapshot not available in cloud-drive');
+  const storage = await storageById(env, row.storage_id);
+  if (!storage) throw new HttpError(410, 'the storage holding this version was removed');
+  const res = await new WebDav(storage).get(row.storage_key);
+  if (!res.ok) throw new HttpError(502, 'version not available from its storage');
   return new Response(res.body, {
     headers: { 'content-type': 'application/octet-stream', 'cache-control': 'private, max-age=31536000, immutable' },
   });
@@ -236,7 +321,8 @@ export async function versionContent(req: Request, env: Env, u: User | null, id:
 
 export async function restoreVersion(req: Request, env: Env, u: User | null, id: string, vid: string): Promise<Response> {
   await requirePage(req, env, u, id, 'editor');
-  return tellRoom(env, id, '/restore', { versionId: vid, by: requireUser(u).name });
+  const user = requireUser(u);
+  return tellRoom(env, id, '/restore', { versionId: vid, by: user.name, userId: user.id });
 }
 
 // ---------- comments ----------

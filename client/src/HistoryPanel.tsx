@@ -10,7 +10,6 @@ import { errorText, timeAgo } from './util';
 interface Props {
   pageId: string;
   role: Role;
-  storage: boolean;
   dark: boolean;
   /** Bumped when the page's room reports a new version. */
   refreshKey: number;
@@ -19,7 +18,7 @@ interface Props {
 
 const KIND: Record<Version['kind'], string> = { auto: 'Auto', manual: 'Saved', 'before-restore': 'Before restore' };
 
-export function HistoryPanel({ pageId, role, storage, dark, refreshKey, onError }: Props) {
+export function HistoryPanel({ pageId, role, dark, refreshKey, onError }: Props) {
   const [versions, setVersions] = useState<Version[] | null>(null);
   const [open, setOpen] = useState<Version | null>(null);
   const [saving, setSaving] = useState(false);
@@ -29,14 +28,6 @@ export function HistoryPanel({ pageId, role, storage, dark, refreshKey, onError 
   useEffect(() => {
     load();
   }, [load, refreshKey]);
-
-  if (!storage) {
-    return (
-      <Text size="sm" c="dimmed">
-        Page history is kept in cloud-drive, which isn't connected to this wiki. See the README to connect it.
-      </Text>
-    );
-  }
 
   return (
     <Stack gap="xs">

@@ -1,10 +1,11 @@
 import { routePartykitRequest } from 'partyserver';
 import { atLeast, requirePage } from './access.js';
-import { currentUser, getMe, login, logout, signup, type User } from './auth.js';
+import { authStatus, currentUser, getMe, login, logout, registrationInfo, signup, type User } from './auth.js';
 import type { Env } from './env.js';
 import { HttpError, json } from './http.js';
 import { ensureSchema } from './migrate.js';
 import * as pages from './pages.js';
+import * as settings from './settings.js';
 import { NAME_HEADER, ROLE_HEADER } from './page-room.js';
 import * as ws from './workspaces.js';
 
@@ -19,7 +20,28 @@ const route = (method: string, pattern: string, handler: Handler) =>
 route('POST', '/api/auth/signup', (r, e) => signup(r, e));
 route('POST', '/api/auth/login', (r, e) => login(r, e));
 route('POST', '/api/auth/logout', (r, e) => logout(r, e));
+route('GET', '/api/auth/status', (r, e) => authStatus(e));
+route('GET', '/api/register/:t', (r, e, u, [t]) => registrationInfo(e, t!));
 route('GET', '/api/me', (r, e, u) => getMe(e, u));
+
+route('GET', '/api/settings', (r, e, u) => settings.getSettings(e, u));
+route('PATCH', '/api/settings/profile', (r, e, u) => settings.updateProfile(r, e, u));
+route('GET', '/api/users/:u/storages', (r, e, u, [id]) => settings.listStorages(e, u, id!));
+route('POST', '/api/users/:u/storages', (r, e, u, [id]) => settings.createStorage(r, e, u, id!));
+route('PUT', '/api/users/:u/default-storage', (r, e, u, [id]) => settings.setDefaultStorage(r, e, u, id!));
+route('PUT', '/api/users/:u/workspaces/:w/storage', (r, e, u, [id, w]) => settings.setWorkspaceStorage(r, e, u, id!, w!));
+route('POST', '/api/storages/test', (r, e, u) => settings.testStorage(r, e, u, null));
+route('PATCH', '/api/storages/:s', (r, e, u, [s]) => settings.updateStorage(r, e, u, s!));
+route('DELETE', '/api/storages/:s', (r, e, u, [s]) => settings.deleteStorage(e, u, s!));
+route('POST', '/api/storages/:s/test', (r, e, u, [s]) => settings.testStorage(r, e, u, s!));
+
+route('GET', '/api/admin/users', (r, e, u) => settings.adminListUsers(e, u));
+route('POST', '/api/admin/users', (r, e, u) => settings.adminCreateUser(r, e, u));
+route('PATCH', '/api/admin/users/:u', (r, e, u, [id]) => settings.adminUpdateUser(r, e, u, id!));
+route('DELETE', '/api/admin/users/:u', (r, e, u, [id]) => settings.adminDeleteUser(e, u, id!));
+route('GET', '/api/admin/links', (r, e, u) => settings.adminListLinks(e, u));
+route('POST', '/api/admin/links', (r, e, u) => settings.adminCreateLink(r, e, u));
+route('DELETE', '/api/admin/links/:t', (r, e, u, [t]) => settings.adminDeleteLink(e, u, t!));
 
 route('POST', '/api/workspaces', (r, e, u) => ws.createWorkspace(r, e, u));
 route('PATCH', '/api/workspaces/:w', (r, e, u, [w]) => ws.renameWorkspace(r, e, u, w!));
@@ -43,7 +65,9 @@ route('GET', '/api/pages/:id', (r, e, u, [id]) => pages.getPage(r, e, u, id!));
 route('PATCH', '/api/pages/:id', (r, e, u, [id]) => pages.movePage(r, e, u, id!));
 route('DELETE', '/api/pages/:id', (r, e, u, [id]) => pages.deletePage(r, e, u, id!));
 route('POST', '/api/pages/:id/files', (r, e, u, [id]) => pages.uploadFile(r, e, u, id!));
-route('GET', '/api/pages/:id/files/:key', (r, e, u, [id, k]) => pages.downloadFile(r, e, u, id!, k!));
+route('GET', '/api/pages/:id/files', (r, e, u, [id]) => pages.listFiles(r, e, u, id!));
+route('GET', '/api/files/:f/:name', (r, e, u, [f]) => pages.downloadFile(r, e, u, f!));
+route('DELETE', '/api/files/:f', (r, e, u, [f]) => pages.deleteFile(r, e, u, f!));
 route('GET', '/api/pages/:id/versions', (r, e, u, [id]) => pages.listVersions(r, e, u, id!));
 route('POST', '/api/pages/:id/versions', (r, e, u, [id]) => pages.saveVersion(r, e, u, id!));
 route('GET', '/api/pages/:id/versions/:v/content', (r, e, u, [id, v]) => pages.versionContent(r, e, u, id!, v!));

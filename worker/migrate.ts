@@ -1,4 +1,5 @@
 import schema from '../migrations/0001_schema.sql';
+import adminStorage from '../migrations/0002_admin_storage.sql';
 
 /**
  * Migrations bundled into the Worker, applied on first use so a plain
@@ -6,7 +7,10 @@ import schema from '../migrations/0001_schema.sql';
  * Uses Wrangler's `d1_migrations` table, so `wrangler d1 migrations apply`
  * still works and sees the same state.
  */
-const MIGRATIONS: [name: string, sql: string][] = [['0001_schema.sql', schema]];
+const MIGRATIONS: [name: string, sql: string][] = [
+  ['0001_schema.sql', schema],
+  ['0002_admin_storage.sql', adminStorage],
+];
 
 /** Splits a migration into statements (no semicolons inside strings in these files). */
 function statements(sql: string): string[] {
