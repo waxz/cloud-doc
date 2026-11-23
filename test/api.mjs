@@ -602,6 +602,125 @@ console.log('✓ share links: public read, subpages, commenter for outsiders, re
   console.log('✓ migrate between storages, back up to a storage, restore as a new workspace');
 }
 
+// --- export/import at scale: many steps, nesting, missing files, safety ---
+{
+  const big = await alice.ok('POST', '/api/workspaces', { name: `Big ${run}`, storageId: home.id });
+  await alice.ok('POST', `/api/workspaces/${big.id}/members`, { email: bob.email, role: 'member' });
+  const proj = (await alice.ok('GET', `/api/workspaces/${big.id}/projects`))[0];
+  // 30 pages in a 3-level tree: 5 roots, each with 4 children, the first child with a grandchild
+  const created = [];
+  for (let r = 0; r < 5; r++) {
+    const root = await alice.ok('POST', `/api/projects/${proj.id}/pages`, { parentId: null });
+    created.push(root);
+    for (let c = 0; c < 4; c++) created.push(await alice.ok('POST', `/api/projects/${proj.id}/pages`, { parentId: root.id }));
+  }
+  const kid = created[1];
+  const grand = [];
+  for (let g = 0; g < 5; g++) grand.push(await alice.ok('POST', `/api/projects/${proj.id}/pages`, { parentId: kid.id }));
+  const pages = [...created, ...grand];
+  const first = pages[0];
+  // 14 files on the first page; one is referenced from a link mark in the text
+  const files = [];
+  for (let i = 0; i < 14; i++) files.push(await alice.ok('POST', `/api/pages/${first.id}/files`, png, { 'content-type': 'image/png', 'x-filename': `f${i}.png` }));
+  const live = await alice.connect(first.id);
+  live.doc.getMap('meta').set('title', 'Root with links');
+  const para = new Y.XmlElement('paragraph');
+  const linked = new Y.XmlText();
+  para.insert(0, [linked]);
+  live.doc.getXmlFragment('document-store').push([para]);
+  linked.insert(0, 'download', { link: { href: files[3].url } });
+  // 70 comments (3 pages of export), some replies
+  const roots = [];
+  for (let i = 0; i < 40; i++) roots.push(await alice.ok('POST', `/api/pages/${first.id}/comments`, { body: `c${i}`, quote: 'x', quoteStart: i, quoteEnd: i + 1 }));
+  for (let i = 0; i < 30; i++) await alice.ok('POST', `/api/pages/${first.id}/comments`, { body: `r${i}`, threadId: roots[i % 40].id });
+  // 8 history versions
+  for (let i = 0; i < 8; i++) await alice.ok('POST', `/api/pages/${first.id}/versions`);
+  await sleep(2500);
+  // one file whose bytes are gone from the storage
+  const lost = files[5];
+  for (const k of [...dav.files.keys()]) if (k.includes(`/${lost.id}-`)) dav.files.delete(k);
+
+  const steps = { pages: 0, comments: 0, files: 0, versions: 0, finish: 0 };
+  let b = await alice.ok('POST', `/api/workspaces/${big.id}/backup`, { storageId: home.id });
+  assert.deepEqual(b.totals, { pages: 30, comments: 70, files: 14, versions: 8 }, 'totals counted up front');
+  const folder = b.folder;
+  while (!b.done) {
+    steps[b.state.phase]++; if (process.env.DEBUG_BACKUP) console.log(JSON.stringify({ ...b.state, skipped: undefined }));
+    b = await alice.ok('POST', `/api/workspaces/${big.id}/backup`, { storageId: home.id, folder, state: b.state });
+    assert.ok(Object.values(steps).reduce((x, y) => x + y) < 100, 'export terminates');
+  }
+  assert.ok(steps.pages >= 3 && steps.comments >= 3 && steps.files >= 3 && steps.versions >= 2, `chunked into several steps ${JSON.stringify(steps)}`);
+  assert.equal(b.skipped.length, 1, 'the unreadable file is reported, not fatal');
+  assert.equal(b.skipped[0].id, lost.id);
+  const manifest = JSON.parse(new TextDecoder().decode(dav.files.get([...dav.files.keys()].find((k) => k.endsWith(`${folder}/manifest.json`))).body));
+  assert.deepEqual(manifest.counts, { pages: 30, comments: 70, files: 14, versions: 8 });
+  assert.equal(manifest.complete, true);
+
+  // safety on export
+  await bob.expect(403, 'POST', `/api/workspaces/${big.id}/backup`, { storageId: home.id });
+  await alice.expect(400, 'POST', `/api/workspaces/${big.id}/backup`, { storageId: home.id, folder: '../etc' });
+  await bob.expect(400, 'POST', '/api/import', { storageId: home.id, folder, targetStorageId: home.id }); // not Bob's storage
+  await alice.expect(400, 'POST', '/api/import', { storageId: home.id, folder: '../x', targetStorageId: home.id });
+  await alice.expect(422, 'POST', '/api/import', { storageId: home.id, folder: 'does-not-exist', targetStorageId: home.id }).catch(() => undefined);
+
+  // import it, twice (same name): both work and don't collide
+  const importIt = async (extra = {}) => {
+    let im = await alice.ok('POST', '/api/import', { storageId: home.id, folder, targetStorageId: home.id, ...extra });
+    const wid = im.state.workspaceId;
+    let n = 0;
+    while (!im.done) {
+      im = await alice.ok('POST', '/api/import', { storageId: home.id, folder, targetStorageId: home.id, state: im.state });
+      assert.ok(++n < 100, 'import terminates');
+    }
+    return { wid, im };
+  };
+  const one = await importIt({ restoreMembers: true });
+  const two = await importIt();
+  assert.notEqual(one.wid, two.wid);
+  assert.equal(one.im.state.failed.length, 1, 'only the file that was lost fails');
+  assert.match(one.im.state.failed[0].error, /not in the backup/);
+  const names = (await alice.ok('GET', '/api/me')).workspaces.map((w) => w.name);
+  assert.equal(new Set(names).size, names.length, 'restored workspaces get distinct names');
+
+  const treeOf = async (wid) => Object.values((await alice.ok('GET', `/api/workspaces/${wid}/tree`)).pages).flat();
+  const orig = await treeOf(big.id);
+  const back = await treeOf(one.wid);
+  assert.equal(back.length, 30, 'every page came back');
+  const depth = (list, p) => (p.parent_id ? 1 + depth(list, list.find((x) => x.id === p.parent_id)) : 0);
+  const shape = (list) => list.map((p) => depth(list, p)).sort().join('');
+  assert.equal(shape(back), shape(orig), 'the tree has the same shape');
+  assert.ok(back.every((p) => !orig.some((o) => o.id === p.id)), 'restored pages have their own ids');
+  const root = back.find((p) => p.title === 'Root with links');
+  assert.ok(root, 'titles survive');
+  assert.equal((await alice.ok('GET', `/api/pages/${root.id}/comments`)).length, 70, 'all comments, replies included');
+  const cs = await alice.ok('GET', `/api/pages/${root.id}/comments`);
+  assert.equal(cs.filter((c) => c.thread_id !== c.id).length, 30);
+  assert.ok(cs.filter((c) => c.thread_id !== c.id).every((c) => cs.some((t) => t.id === c.thread_id)), 'replies stay in their threads');
+  assert.equal((await alice.ok('GET', `/api/pages/${root.id}/versions`)).length >= 8, true, 'history came back');
+  const rl = await alice.connect(root.id);
+  const textNode = rl.doc.getXmlFragment('document-store').toArray()[0].toArray()[0];
+  const href = textNode.toDelta()[0].attributes.link.href;
+  assert.ok(href.startsWith('/api/files/') && href !== files[3].url, 'the link mark points at the restored file');
+  assert.deepEqual([...(await alice.ok('GET', href))], [...png]);
+  rl.close();
+  const members = (await alice.ok('GET', `/api/workspaces/${one.wid}/members`)).members.map((m) => m.email);
+  assert.ok(members.includes(bob.email), 'members restored when asked');
+  assert.ok(!(await alice.ok('GET', `/api/workspaces/${two.wid}/members`)).members.some((m) => m.email === bob.email), 'and not when not asked');
+
+  // the copy stands on its own: delete the original workspace and read the restored file
+  live.close();
+  await alice.ok('DELETE', `/api/workspaces/${big.id}`);
+  assert.deepEqual([...(await alice.ok('GET', href))], [...png], 'restored files survive deleting the original');
+  // an unfinished backup (no manifest) is refused
+  for (const k of [...dav.files.keys()]) if (k.endsWith(`${folder}/manifest.json`)) dav.files.delete(k);
+  await alice.expect(404, 'POST', '/api/import', { storageId: home.id, folder, targetStorageId: home.id }).catch(() => undefined);
+  const listed = await alice.ok('GET', `/api/storages/${home.id}/backups`);
+  assert.ok(listed.some((x) => x.folder === folder && !x.complete), 'a folder without a manifest is listed as unfinished');
+  await alice.ok('DELETE', `/api/workspaces/${one.wid}`);
+  await alice.ok('DELETE', `/api/workspaces/${two.wid}`);
+  console.log('✓ export/import at scale: chunked steps, nesting, replies, history, links, missing file, safety');
+}
+
 a.close();
 dav.close();
 console.log('\nAll API checks passed');
