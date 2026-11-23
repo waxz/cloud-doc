@@ -197,6 +197,7 @@ export class PageRoom extends YServer<Env> {
    * Saves are triggered by document edits only; unchanged state writes nothing.
    */
   private async persist(force: boolean): Promise<void> {
+    if (this.deleted) return; // a save still pending when the page was deleted must not bring it back
     this.ensureTables();
     const sv = this.stateVector();
     if (this.getKv('saved_sv') !== sv) {
@@ -219,7 +220,10 @@ export class PageRoom extends YServer<Env> {
     const last = Number(this.getKv('last_snapshot_at') ?? 0);
     if (Date.now() - last >= AUTO_SNAPSHOT_EVERY && this.getKv('last_snapshot_sv') !== this.stateVector()) {
       // The page itself is already saved; a missed snapshot is retried on the next save.
-      await this.snapshot('auto', null, null).catch((err) => console.error('auto snapshot failed', err));
+      await this.snapshot('auto', null, null).catch((err) => {
+        // The page was deleted while this save was in flight: nothing to keep.
+        if (!(err instanceof HttpError && err.status === 404)) console.error('auto snapshot failed', err);
+      });
     }
   }
 
