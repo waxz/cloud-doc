@@ -78,6 +78,8 @@ export class PageRoom extends YServer<Env> {
   /** Per-socket traffic meters (memory only: they restart when the room wakes from hibernation). */
   private meters = new Map<string, Meter>();
   private lastLive: boolean | undefined;
+  /** Set when the page is deleted, so closing its sockets doesn't save it back into existence. */
+  private deleted = false;
 
   onConnect(conn: Connection<ConnState>, ctx: ConnectionContext): void | Promise<void> {
     const role = ctx.request.headers.get(ROLE_HEADER) as Role | null;
@@ -125,7 +127,7 @@ export class PageRoom extends YServer<Env> {
     const result = super.onClose(conn, code, reason, wasClean);
     this.announceMode(undefined, conn);
     // The last person leaving: write down what they did now rather than waiting out the throttle.
-    if (![...this.getConnections()].some((c) => c.id !== conn.id)) {
+    if (!this.deleted && code !== 4404 && ![...this.getConnections()].some((c) => c.id !== conn.id)) {
       this.ctx.waitUntil(this.persist(true).catch((err) => console.error('final save failed', err)));
     }
     return result;
@@ -343,6 +345,7 @@ export class PageRoom extends YServer<Env> {
     useStorageKey(this.env.STORAGE_KEY);
     try {
       if (request.method === 'DELETE') {
+        this.deleted = true;
         for (const conn of this.getConnections()) conn.close(4404, 'page deleted');
         await this.ctx.storage.deleteAlarm();
         await this.ctx.storage.deleteAll();

@@ -572,6 +572,7 @@ console.log('✓ share links: public read, subpages, commenter for outsiders, re
   const folder = b.folder;
   for (let i = 0; !b.done && i < 80; i++) b = await alice.ok('POST', `/api/workspaces/${ws.id}/backup`, { storageId: home.id, folder, state: b.state });
   assert.ok(b.done, 'backup finished');
+  if (process.env.DEBUG_BACKUP) console.log([...dav.files.entries()].filter(([k]) => k.includes(`/cloud-doc-backups/${folder}/`)).map(([k, v]) => `${k.split(folder + '/')[1]} (${v.body.length} B)`).join('\n'));
   assert.ok([...dav.files.keys()].some((k) => k.endsWith(`/cloud-doc-backups/${folder}/manifest.json`)));
   const listed = await alice.ok('GET', `/api/storages/${home.id}/backups`);
   assert.ok(listed.some((x) => x.folder === folder && x.complete), 'listed as a complete backup');
