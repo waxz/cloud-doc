@@ -1,7 +1,7 @@
 import { ActionIcon, Anchor, Button, FileButton, Group, Stack, Text, Tooltip } from '@mantine/core';
-import { IconFile, IconFileTypePdf, IconMovie, IconMusic, IconPhoto, IconRowInsertBottom, IconTrash, IconUpload } from '@tabler/icons-react';
+import { IconFile, IconFiles, IconFileTypePdf, IconMovie, IconMusic, IconPhoto, IconRowInsertBottom, IconTrash, IconUpload } from '@tabler/icons-react';
 import { useCallback, useEffect, useState } from 'react';
-import { api, atLeast, type FileInfo, type Role, type User } from './api';
+import { ApiError, api, atLeast, type FileInfo, type Role, type User } from './api';
 import { blockTypeFor } from './blocks';
 import type { Editor } from './Editor';
 import { errorText, formatBytes, timeAgo } from './util';
@@ -19,30 +19,56 @@ interface Props {
 const ICON = { image: IconPhoto, video: IconMovie, audio: IconMusic, pdf: IconFileTypePdf, file: IconFile };
 
 /** Adds a block showing the file at the end of the page. */
-export function insertFile(editor: Editor, f: FileInfo): void {
+export function insertFile(editor: Editor, f: FileInfo, pageId: string, commentable = false): void {
   const last = editor.document[editor.document.length - 1];
-  const block = { type: blockTypeFor(f.mime), props: { url: f.url, name: f.name } } as const;
+  const block = { type: blockTypeFor(f.mime), props: { url: f.url, name: f.name, ...(blockTypeFor(f.mime) === 'pdf' ? { pageId, commentable } : {}) } } as const;
   if (last) editor.insertBlocks([block as any], last, 'after');
   else editor.replaceBlocks(editor.document, [block as any]);
 }
 
 /** Uploads files to a page and adds each to the document. */
-export async function uploadInto(pageId: string, editor: Editor | null, files: File[], onError: (m: string) => void) {
+export async function uploadInto(pageId: string, editor: Editor | null, files: File[], onError: (m: string) => void, commentable = false) {
   for (const file of files) {
     try {
       const f = await api.upload(pageId, file);
-      if (editor) insertFile(editor, f);
+      if (editor) insertFile(editor, f, pageId, commentable);
     } catch (e) {
       onError(`${file.name}: ${errorText(e)}`);
     }
   }
 }
 
-/** The files uploaded to a page: upload more, put one in the page, remove. */
+/**
+ * Deletes a file, asking first when pages still use it (the answer lists them). Resolves true when it was deleted.
+ */
+export async function deleteFileAsking(f: { id: string; name: string }, onError: (m: string) => void): Promise<boolean> {
+  try {
+    await api.deleteFile(f.id);
+    return true;
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 409 && Array.isArray(e.data.used_in)) {
+      const used = e.data.used_in as { id: string; title: string }[];
+      const where = used.slice(0, 5).map((p) => `• ${p.title || 'Untitled'}`).join('\n');
+      if (!confirm(`“${f.name}” is used in ${used.length} page${used.length === 1 ? '' : 's'}:\n${where}\n\nDelete it anyway? Those pages will show a broken file.`)) return false;
+      try {
+        await api.deleteFile(f.id, true);
+        return true;
+      } catch (err) {
+        onError(errorText(err));
+        return false;
+      }
+    }
+    onError(errorText(e));
+    return false;
+  }
+}
+
+/** The files this page uses: upload more, put one in the page, remove. All the workspace's files are in its Files list. */
 export function FilesPanel({ pageId, role, me, editor, refreshKey, onError }: Props) {
   const [files, setFiles] = useState<FileInfo[] | null>(null);
   const [busy, setBusy] = useState(false);
   const canEdit = atLeast(role, 'editor');
+  const canComment = atLeast(role, 'commenter');
 
   const load = useCallback(() => api.files(pageId).then(setFiles, (e) => onError(errorText(e))), [pageId, onError]);
   useEffect(() => {
@@ -56,7 +82,7 @@ export function FilesPanel({ pageId, role, me, editor, refreshKey, onError }: Pr
           multiple
           onChange={async (list) => {
             setBusy(true);
-            await uploadInto(pageId, editor, list, onError);
+            await uploadInto(pageId, editor, list, onError, canComment);
             setBusy(false);
             load();
           }}
@@ -68,9 +94,12 @@ export function FilesPanel({ pageId, role, me, editor, refreshKey, onError }: Pr
           )}
         </FileButton>
       )}
+      <Button size="xs" variant="subtle" leftSection={<IconFiles size={16} />} onClick={() => window.dispatchEvent(new CustomEvent('cloud-doc-open-workspace-files'))}>
+        All files of the workspace…
+      </Button>
       {files?.length === 0 && (
         <Text size="sm" c="dimmed">
-          No files yet. {canEdit && 'Upload here, drop files into the page, or type / and pick Image, Video or PDF.'}
+          No files in this page yet. {canEdit && 'Upload here, drop files into the page, or type / and pick Image, Video or PDF.'}
         </Text>
       )}
       {files?.map((f) => {
@@ -88,7 +117,7 @@ export function FilesPanel({ pageId, role, me, editor, refreshKey, onError }: Pr
             </div>
             {canEdit && editor && (
               <Tooltip label="Add to the page">
-                <ActionIcon variant="subtle" color="gray" onClick={() => insertFile(editor, f)} aria-label={`Add ${f.name} to the page`}>
+                <ActionIcon variant="subtle" color="gray" onClick={() => insertFile(editor, f, pageId, canComment)} aria-label={`Add ${f.name} to the page`}>
                   <IconRowInsertBottom size={16} />
                 </ActionIcon>
               </Tooltip>
@@ -100,13 +129,7 @@ export function FilesPanel({ pageId, role, me, editor, refreshKey, onError }: Pr
                   color="red"
                   aria-label={`Delete ${f.name}`}
                   onClick={async () => {
-                    if (!confirm(`Delete ${f.name}? Blocks showing it will break.`)) return;
-                    try {
-                      await api.deleteFile(f.id);
-                      load();
-                    } catch (e) {
-                      onError(errorText(e));
-                    }
+                    if (await deleteFileAsking(f, onError)) load();
                   }}
                 >
                   <IconTrash size={16} />

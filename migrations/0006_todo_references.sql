@@ -1,0 +1,1 @@
+ALTER TABLE todos ADD COLUMN references_json TEXT NOT NULL DEFAULT '[]';

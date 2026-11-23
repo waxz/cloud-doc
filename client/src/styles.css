@@ -75,7 +75,11 @@ body { background: var(--mantine-color-body); -webkit-tap-highlight-color: trans
 .crumb { font-size: 14px; color: var(--muted); text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; display: inline-block; vertical-align: bottom; }
 .crumb:hover { color: var(--mantine-color-text); }
 .crumb.current { color: var(--mantine-color-text); font-weight: 500; }
-.page { max-width: 860px; margin: 0 auto; padding: 4px 0 160px; }
+.page { max-width: 1040px; margin: 0 auto; padding: 4px 0 160px; }
+.is-wide .page { max-width: none; }
+/* with the explorer hidden the reading column is allowed to grow into the room it left */
+.nav-hidden .page { max-width: 1400px; }
+.nav-hidden .is-wide .page { max-width: none; }
 .page-bar { height: 32px; padding: 0 54px; }
 .title-row { padding: 20px 54px 4px; }
 .page-icon { display: inline-block; font-size: 44px; line-height: 1.1; margin-bottom: 4px; border-radius: 8px; padding: 2px; }
@@ -90,13 +94,114 @@ button.page-icon:hover { background: var(--hover); }
 }
 .title::placeholder { color: var(--muted); opacity: .5; }
 .pdf-frame { width: 100%; height: 640px; border: 0; border-radius: 6px; background: var(--side); display: block; }
+.pdf-reader { width: 100%; border: 1px solid var(--line); border-radius: 8px; overflow: clip; background: var(--side); }
+.pdf-reader-bar { position: sticky; top: 52px; z-index: 6; min-height: 42px; display: flex; align-items: center; gap: 8px; padding: 0 10px; border-bottom: 1px solid var(--line); background: var(--mantine-color-body); color: var(--muted); }
+.pdf-reader-bar span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pdf-reader-bar a { color: var(--accent); font-size: 12px; text-decoration: none; }
+.pdf-pages { padding: 12px 0; overflow-x: auto; } /* every page, one after another, in the page's own scroll: nothing scrolls inside the viewer */
+.pdf-reader-state { height: 160px; display: grid; place-items: center; color: var(--muted); }
+.pdf-reader-error { color: var(--mantine-color-red-6); text-align: center; padding: 24px; }
+.pdf-page { position: relative; scroll-margin-top: 108px; margin: 0 auto 12px; background: white; box-shadow: 0 2px 8px rgb(0 0 0 / 18%); }
+.pdf-page canvas { position: absolute; inset: 0; }
+.pdf-text-layer { position: absolute; inset: 0; z-index: 2; color: transparent; line-height: 1; }
+.pdf-text-layer :is(span, br) { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0%; }
+.pdf-text-layer ::selection { background: rgb(37 99 235 / 28%); color: transparent; }
+.pdf-annotation-layer { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
+.pdf-highlight { position: absolute; border: 0; border-radius: 2px; background: rgb(250 204 21 / 38%); box-shadow: 0 0 0 1px rgb(250 204 21 / 55%); padding: 0; pointer-events: none; }
+.pdf-highlight:hover { background: rgb(250 204 21 / 58%); }
+.pdf-highlight.is-active { box-shadow: 0 0 0 2px var(--highlight-color, #facc15), 0 2px 8px rgb(0 0 0 / 25%); }
+/* Highlight shapes on PDF */
+.pdf-highlight.shape-underline { background: none; box-shadow: none; border-bottom: 2px solid var(--highlight-color, #facc15); border-radius: 0; }
+.pdf-highlight.shape-underline:hover { background: rgb(250 204 21 / 15%); }
+.pdf-highlight.shape-underline.is-active { background: rgb(250 204 21 / 25%); }
+.pdf-highlight.shape-strike { background: none; box-shadow: none; border-radius: 0; }
+.pdf-highlight.shape-strike::after { content: ''; position: absolute; left: 0; right: 0; top: 50%; border-top: 2px solid var(--highlight-color, #facc15); transform: translateY(-50%); }
+.pdf-highlight.shape-strike:hover { background: rgb(250 204 21 / 15%); }
+.pdf-highlight.shape-strike.is-active { background: rgb(250 204 21 / 25%); }
+.pdf-highlight.shape-box { background: rgb(250 204 21 / 8%); box-shadow: none; border: 2px solid var(--highlight-color, #facc15); }
+.pdf-highlight.shape-box:hover { background: rgb(250 204 21 / 18%); }
+.pdf-highlight.shape-box.is-active { background: rgb(250 204 21 / 28%); border-width: 2px; }
+.pdf-comment-button { position: fixed; z-index: 80; transform: translate(-50%, -100%) translateY(-8px); border: 1px solid var(--line); border-radius: 7px; background: var(--mantine-color-body); color: var(--mantine-color-text); box-shadow: 0 6px 20px rgb(0 0 0 / 18%); padding: 5px 9px; font-size: 12px; font-weight: 600; cursor: pointer; }
+.latex-block { border: 1px solid var(--line); border-radius: 6px; padding: 10px; background: var(--side); }
+.latex-block textarea { display: block; width: 100%; min-height: 48px; border: 0; border-bottom: 1px solid var(--line); resize: vertical; background: transparent; color: inherit; font: 14px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; outline: 0; }
+.latex-preview { min-height: 36px; overflow-x: auto; padding: 8px 0 0; }
+.latex-inline { display: inline-flex; align-items: center; gap: 4px; vertical-align: middle; }
+.latex-inline input { width: 120px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: inherit; outline: 0; font: inherit; }
 .selection-comment { position: fixed; z-index: 30; transform: translate(-50%, calc(-100% - 8px)); }
+.selection-highlight-toolbar,
+.pdf-comment-button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--mantine-color-body);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 18%);
+}
+.selection-highlight-palette { display: flex; align-items: center; gap: 5px; }
+.selection-color {
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--highlight-color);
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 12%);
+  cursor: pointer;
+}
+.selection-color.is-selected { box-shadow: 0 0 0 2px var(--mantine-color-body), 0 0 0 4px var(--highlight-color); }
+.selection-comment-action { border: 0; background: transparent; color: var(--mantine-color-text); font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+/* Shape buttons in selection toolbar */
+.selection-shape-buttons { display: flex; align-items: center; gap: 2px; }
+.selection-shape-btn {
+  display: inline-grid; place-items: center; width: 28px; height: 26px; padding: 0; border: 0;
+  border-radius: 5px; background: none; color: var(--mantine-color-text); cursor: pointer;
+  font-weight: 700; font-size: 13px; line-height: 1;
+}
+.selection-shape-btn:hover { background: var(--hover); }
+.selection-shape-btn[aria-pressed="true"] { background: var(--active); }
+.selection-shape-btn .shape-icon { padding: 0 2px; border-radius: 2px; }
+.selection-shape-btn .shape-icon.shape-highlight { background: var(--highlight-color, rgb(250 204 21 / 50%)); }
+.selection-shape-btn .shape-icon.shape-underline { text-decoration: underline 2px var(--highlight-color, #facc15); text-underline-offset: 2px; }
+.selection-shape-btn .shape-icon.shape-strike { text-decoration: line-through 2px var(--highlight-color, #facc15); }
+.selection-shape-btn .shape-icon.shape-box { outline: 2px solid var(--highlight-color, #facc15); outline-offset: 0; }
+.selection-sep { width: 1px; height: 18px; margin: 0 3px; background: var(--line); }
+.pdf-comment-button { transform: translate(-50%, -100%) translateY(-8px); }
+.editor-comment-highlight { background: rgb(250 204 21 / 38%); border-radius: 2px; box-shadow: 0 0 0 1px rgb(250 204 21 / 35%); }
+.editor-comment-highlight-overlay {
+  position: fixed;
+  z-index: 5;
+  border: 0;
+  border-radius: 2px;
+  padding: 0;
+  pointer-events: none;
+}
+.editor-comment-highlight[data-highlight-color="orange"] { background: rgb(251 146 60 / 38%); box-shadow: 0 0 0 1px rgb(251 146 60 / 35%); }
+.editor-comment-highlight[data-highlight-color="red"] { background: rgb(251 113 133 / 38%); box-shadow: 0 0 0 1px rgb(251 113 133 / 35%); }
+.editor-comment-highlight[data-highlight-color="pink"] { background: rgb(232 121 249 / 38%); box-shadow: 0 0 0 1px rgb(232 121 249 / 35%); }
+.editor-comment-highlight[data-highlight-color="purple"] { background: rgb(167 139 250 / 38%); box-shadow: 0 0 0 1px rgb(167 139 250 / 35%); }
+.editor-comment-highlight[data-highlight-color="blue"] { background: rgb(96 165 250 / 38%); box-shadow: 0 0 0 1px rgb(96 165 250 / 35%); }
+.editor-comment-highlight[data-highlight-color="green"] { background: rgb(52 211 153 / 38%); box-shadow: 0 0 0 1px rgb(52 211 153 / 35%); }
+.editor-comment-highlight.is-active { background: rgb(250 204 21 / 68%); box-shadow: 0 0 0 2px rgb(250 204 21 / 75%), 0 2px 8px rgb(0 0 0 / 20%); }
+/* Highlight shapes on editor text */
+.editor-comment-highlight-overlay.shape-underline { background: none !important; border-bottom: 2px solid var(--highlight-color, #facc15); border-radius: 0; }
+.editor-comment-highlight-overlay.shape-strike { background: none !important; border-radius: 0; }
+.editor-comment-highlight-overlay.shape-strike::after { content: ''; position: absolute; left: 0; right: 0; top: 50%; border-top: 2px solid var(--highlight-color, #facc15); transform: translateY(-50%); pointer-events: none; }
+.editor-comment-highlight-overlay.shape-box { background: rgb(250 204 21 / 8%) !important; border: 2px solid var(--highlight-color, #facc15); }
 
 .side-panel {
-  width: 360px; flex: none; border-left: 1px solid var(--line); padding: 12px; background: var(--mantine-color-body);
+  width: 400px; flex: none; border-left: 1px solid var(--line); padding: 12px; background: var(--mantine-color-body);
   position: sticky; top: 0; align-self: flex-start; height: 100dvh; overflow-y: auto;
 }
+.comment-editor { min-height: 132px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.comment-editor .bn-editor { min-height: 116px; padding: 8px; }
 .thread .comment + .comment { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+.comment-reply-editor { min-height: 72px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.comment-reply-editor .bn-editor { min-height: 56px; padding: 6px 8px; }
+/* Quote shapes in comments panel */
+.quote-underline { text-decoration: underline 2px; text-underline-offset: 3px; }
+.quote-strike { text-decoration: line-through 2px; }
+.quote-box { border: 1px dashed; padding: 2px 4px; border-radius: 3px; }
 .version { display: block; padding: 6px 8px; border-radius: 6px; }
 .version:hover { background: var(--hover); }
 .file-row { padding: 6px; border-radius: 6px; }
@@ -124,6 +229,249 @@ button.page-icon:hover { background: var(--hover); }
   .page-icon { font-size: 36px; }
   .page .bn-editor { padding-inline: 16px; }
   .pdf-frame { height: 70vh; }
+  .pdf-reader-state { height: 120px; }
   .shared { flex-direction: column; }
   .shared-tree { width: auto; max-height: 35%; border-right: 0; border-bottom: 1px solid var(--line); }
 }
+
+/* Notion-style comment cards: accent bar in the highlight's colour, quote on top, actions on hover. */
+.thread { border-left: 4px solid var(--thread-accent, var(--line)); cursor: pointer; transition: box-shadow .15s, outline-color .15s; }
+.thread:hover { box-shadow: 0 1px 6px rgb(0 0 0 / 12%); }
+.thread.is-active { outline: 2px solid var(--accent); outline-offset: -1px; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+.thread .thread-actions { opacity: 0; transition: opacity .15s; }
+.thread:hover .thread-actions, .thread.is-active .thread-actions, .thread:focus-within .thread-actions { opacity: 1; }
+.thread-add { cursor: text; flex: 1; }
+.thread-quote { min-width: 0; }
+@media (hover: none) { .thread .thread-actions { opacity: 1; } }
+
+/* Admin usage: hourly request bars */
+.usage-bars { display: flex; align-items: flex-end; gap: 3px; height: 72px; }
+.usage-bar { flex: 1; height: 100%; display: flex; align-items: flex-end; background: color-mix(in srgb, var(--accent) 7%, transparent); border-radius: 2px; }
+.usage-bar-fill { width: 100%; min-height: 2px; background: var(--accent); border-radius: 2px; }
+
+.editor-comment-highlight-overlay.is-active { box-shadow: 0 0 0 3px var(--highlight-color, #facc15), 0 2px 10px rgb(0 0 0 / 25%); animation: highlight-pulse 0.9s ease-in-out 2; }
+@keyframes highlight-pulse { 50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--highlight-color, #facc15) 45%, transparent); } }
+
+/* The page body stays mounted while it connects (it has to, to sync) but isn't shown. */
+.page { position: relative; }
+.page.is-loading > :not(.page-loading) { visibility: hidden; }
+.page-loading { position: absolute; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; min-height: 40vh; }
+.page-loading-static { position: static; min-height: 60vh; }
+
+.editor-highlight-layer { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
+
+.outline-item { display: block; width: 100%; padding: 5px 8px; border-radius: 6px; font-size: 13px; line-height: 1.35; text-align: left; overflow-wrap: anywhere; }
+.outline-item:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.hit.is-active .hit-title { color: var(--accent); }
+@media print {
+  /* Only the article: no sidebar, header, panels, menus or other floating UI. */
+  .navbar, .mantine-AppShell-navbar, .mantine-AppShell-header, .page-header, .page-bar, .side-panel,
+  .editor-highlight-layer, .selection-comment, .bn-side-menu, .bn-formatting-toolbar, .bn-suggestion-menu,
+  .mantine-Menu-dropdown, .mantine-Popover-dropdown, .mantine-Tooltip-tooltip, .mantine-Modal-root, .mantine-Drawer-root,
+  .mantine-Notifications-root, [data-portal], .pdf-reader-bar, .add-icon, .page-loading { display: none !important; }
+  html, body, #root, .mantine-AppShell-root, .mantine-AppShell-main, .main, .page-layout, .page-main {
+    height: auto !important; min-height: 0 !important; overflow: visible !important; position: static !important;
+    padding: 0 !important; margin: 0 !important; width: auto !important;
+  }
+  .page { padding: 0; }
+  .title-row, .bn-container { padding-left: 0 !important; padding-right: 0 !important; }
+}
+
+.hit-title { cursor: pointer; font-weight: 600; }
+.hit-title .hit-project { font-weight: 400; }
+.hit-match { font-size: 12px; line-height: 1.45; padding: 4px 6px; margin: 2px 0; border-radius: 6px; cursor: pointer; color: var(--mantine-color-dimmed); overflow-wrap: anywhere; }
+.hit-match:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.hit-match mark { background: rgb(250 204 21 / 55%); color: inherit; border-radius: 2px; padding: 0 1px; }
+::highlight(search-hit) { background: rgb(250 204 21 / 70%); color: inherit; }
+
+/* Notion-style touches */
+.comment-avatar { flex: none; width: 20px; height: 20px; border-radius: 50%; color: #fff; font-size: 11px; font-weight: 600; display: grid; place-items: center; }
+.comment-bubble {
+  position: fixed; pointer-events: auto; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 14%, var(--mantine-color-body)); color: var(--accent);
+  font-size: 11px; font-weight: 600; cursor: pointer; display: grid; place-items: center; transition: transform .12s, background .12s;
+}
+.comment-bubble:hover, .comment-bubble.is-active { background: var(--accent); color: #fff; transform: scale(1.12); }
+.bn-editor.over-highlight { cursor: pointer; }
+.thread { border-radius: 10px; }
+.thread-quote { font-size: 13px; }
+.tree-row { border-radius: 6px; transition: background .1s; }
+.crumbs a, .crumbs span { transition: color .1s; }
+.title { letter-spacing: -0.01em; }
+.side-panel { box-shadow: -1px 0 0 var(--line), -8px 0 24px rgb(0 0 0 / 3%); }
+@media (max-width: 62em) { .comment-bubble { display: none; } }
+
+/* Compact comment composer: the panel is narrow, so type and spacing are small. */
+.composer .comment-editor, .comment-reply-editor { font-size: 13px; }
+.comment-editor, .comment-reply-editor { --bn-font-size: 13px; }
+.comment-editor .bn-editor, .comment-reply-editor .bn-editor { font-size: 13px; line-height: 1.45; }
+.comment-editor .bn-block-content, .comment-reply-editor .bn-block-content,
+.comment-editor .bn-inline-content, .comment-reply-editor .bn-inline-content { font-size: 13px !important; line-height: 1.45; }
+.comment-editor [data-content-type="heading"] .bn-inline-content, .comment-reply-editor [data-content-type="heading"] .bn-inline-content { font-size: 14px !important; font-weight: 600; }
+.comment-editor .bn-block-outer, .comment-reply-editor .bn-block-outer { margin: 0; }
+.comment-editor .bn-editor { min-height: 64px; padding: 6px 8px; }
+.comment-reply-editor .bn-editor { min-height: 40px; padding: 4px 8px; }
+.comment-editor { min-height: 0; }
+.comment-reply-editor { min-height: 0; }
+.comment-editor .bn-inline-content:has(> .ProseMirror-trailingBreak:only-child)::before,
+.comment-editor .bn-editor [data-is-empty-and-focused]::before { font-size: 13px; }
+.composer-quote { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; padding: 2px 6px; margin-bottom: 6px; border-left: 3px solid var(--line); background: color-mix(in srgb, var(--accent) 5%, transparent); border-radius: 0 4px 4px 0; }
+.composer-hint { padding: 2px 2px; }
+.comment-token { cursor: pointer; border-radius: 4px; padding: 0 2px; margin: 0 -1px; font-weight: 500; }
+.comment-token-member { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.comment-token-tag { color: #2f9e44; background: rgb(47 158 68 / 10%); }
+.comment-token:hover, .comment-token.is-on { filter: brightness(.9); box-shadow: 0 0 0 1px currentColor; }
+
+/* Comment text */
+.comment-rich { font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.comment-rich > :first-child { margin-top: 0; } .comment-rich > :last-child { margin-bottom: 0; }
+.comment-p { margin: 2px 0; }
+.comment-heading { font-weight: 600; margin: 4px 0 2px; }
+.comment-list { margin: 2px 0; padding-left: 20px; }
+.comment-task { list-style: none; margin-left: -18px; display: flex; gap: 6px; align-items: baseline; }
+.comment-quote { margin: 3px 0; padding: 1px 8px; border-left: 3px solid var(--line); color: var(--mantine-color-dimmed); }
+.comment-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; padding: 1px 4px; border-radius: 4px; background: color-mix(in srgb, currentColor 9%, transparent); }
+.comment-pre { margin: 4px 0; padding: 6px 8px; border-radius: 6px; overflow-x: auto; font-size: 12px; background: color-mix(in srgb, currentColor 7%, transparent); }
+.comment-link { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.comment-math { overflow-x: auto; margin: 4px 0; }
+
+.comment-table-wrap { overflow-x: auto; margin: 4px 0; }
+.comment-table { border-collapse: collapse; font-size: 12px; min-width: 100%; }
+.comment-table th, .comment-table td { border: 1px solid var(--line); padding: 3px 7px; vertical-align: top; }
+.comment-table th { background: color-mix(in srgb, currentColor 6%, transparent); font-weight: 600; }
+.comment-img { max-width: 100%; max-height: 260px; border-radius: 6px; display: block; margin: 4px 0; }
+.comment-hr { border: 0; border-top: 1px solid var(--line); margin: 6px 0; }
+
+/* The side panel floats over the page instead of squeezing it, so opening, closing or switching
+   panels never reflows the document (and the highlights drawn over it stay exactly in place). */
+.side-panel { position: fixed !important; top: 52px; right: 0; height: calc(100dvh - 52px) !important; z-index: 30; box-shadow: -1px 0 0 var(--line), -10px 0 28px rgb(0 0 0 / 8%); }
+/* In reading width, with room for it, the panel sits beside the page and never covers it (the page's column moves over;
+   the highlights are repainted in the same frame). Full width and small windows keep it floating over the page. */
+/* The layout is three columns: the explorer on the left (hideable), the page in the middle, and on the right a column
+   for the margin comments, which an opened panel takes over. Below 1100px there is no column: the panel floats. */
+.right-col { flex: none; width: 0; position: relative; }
+@media (min-width: 1100px) {
+  .right-col { width: 400px; } /* always reserved, so opening or closing the panel never moves the page */
+  .right-col .side-panel { position: sticky !important; top: 0; right: auto; width: 400px; height: 100dvh !important; z-index: 8; box-shadow: none; }
+}
+
+/* The editor takes the page's background in both themes (BlockNote's dark editor colour differed from it). */
+.page .bn-container, .comment-editor .bn-container, .comment-reply-editor .bn-container { --bn-colors-editor-background: transparent; }
+
+/* The PDF viewer fills the page's width (BlockNote sizes a file block to its content otherwise). */
+.node-pdf .bn-file-block-content-wrapper, .node-pdf .bn-visual-media-wrapper, .node-pdf .pdf-reader { width: 100% !important; max-width: none !important; flex: 1 1 100%; }
+.pdf-reader { min-width: 0; }
+
+/* How PDF.js lays out its text layer (its own stylesheet, which this viewer doesn't load): the size, squeeze and
+   rotation of each piece of text come from variables it sets on the pieces. Without these the text, and so
+   the selection rectangles used for highlights, don't line up with the page. */
+.pdf-text-layer { --min-font-size: 1; --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size)); --min-font-size-inv: calc(1 / var(--min-font-size)); }
+.pdf-text-layer > :not(.markedContent), .pdf-text-layer .markedContent span:not(.markedContent) {
+  z-index: 1; --font-height: 0; font-size: calc(var(--text-scale-factor) * var(--font-height));
+  --scale-x: 1; --rotate: 0deg; transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+.pdf-text-layer .markedContent { display: contents; }
+
+/* Brief comments in the page's right margin: who said what, click to open the card. */
+.comment-brief {
+  position: fixed; pointer-events: auto; box-sizing: border-box; padding: 5px 9px; text-align: left; cursor: pointer;
+  font: inherit; font-size: 12px; line-height: 1.3; color: var(--mantine-color-text);
+  background: var(--mantine-color-body); border: 1px solid var(--line); border-left: 3px solid var(--brief-color, #facc15);
+  border-radius: 8px; box-shadow: 0 1px 6px rgb(0 0 0 / 10%); overflow: hidden; display: block; transition: box-shadow .12s, transform .12s;
+}
+.comment-brief-text { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.comment-brief b { font-weight: 600; }
+.comment-brief i { font-style: normal; color: var(--accent); font-weight: 600; margin-left: 4px; }
+.comment-brief:hover, .comment-brief.is-active { box-shadow: 0 3px 12px rgb(0 0 0 / 18%); transform: translateX(-2px); border-color: var(--brief-color, #facc15); }
+
+.pdf-text-layer .endOfContent { display: block; position: absolute; inset: 100% 0 0; z-index: 0; cursor: default; user-select: none; -webkit-user-select: none; transform: none; font-size: 0; }
+.pdf-text-layer.selecting .endOfContent { top: 0; }
+.pdf-text-layer span { user-select: text; -webkit-user-select: text; }
+
+.pdf-pending-layer { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
+.pdf-pending-layer > div { position: absolute; background: rgb(37 99 235 / 28%); border-radius: 2px; }
+
+/* Only the text of a PDF can be selected, never the viewer as a whole: no selection of the block, no blue frame. */
+.pdf-reader { -webkit-user-select: none; user-select: none; }
+.pdf-text-layer span { -webkit-user-select: text; user-select: text; }
+.pdf-reader ::selection { background: rgb(37 99 235 / 28%); }
+.ProseMirror-selectednode .pdf-reader, .ProseMirror-selectednode > .pdf-reader, .bn-block-content[data-content-type="pdf"].ProseMirror-selectednode > * { outline: none !important; box-shadow: none !important; }
+.ProseMirror-selectednode:has(.pdf-reader), .ProseMirror-selectednode:has(.pdf-reader) > * { outline: none !important; }
+
+/* PDF viewer tools: zoom, fit, page jump. They stay under the page header while the PDF scrolls by. */
+.pdf-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pdf-tools { display: flex; align-items: center; gap: 2px; flex: none; color: var(--mantine-color-text); }
+.pdf-tool { display: grid; place-items: center; width: 26px; height: 26px; border: 0; border-radius: 6px; background: none; color: inherit; cursor: pointer; }
+.pdf-tool:hover:not(:disabled) { background: var(--hover); }
+.pdf-tool:disabled { opacity: .35; cursor: default; }
+.pdf-tool[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+.pdf-zoom { font-size: 12px; min-width: 38px; text-align: center; color: var(--muted); white-space: nowrap; }
+.pdf-sep { width: 1px; height: 18px; margin: 0 6px; background: var(--line); }
+.pdf-page-input { width: 34px; height: 24px; border: 1px solid var(--line); border-radius: 6px; text-align: center; font-size: 12px; background: var(--mantine-color-body); color: inherit; }
+@media (max-width: 48em) { .pdf-name { display: none; } .pdf-reader-bar { top: 52px; flex-wrap: wrap; padding: 4px 8px; } .pdf-tools { flex-wrap: wrap; } }
+@media print { .pdf-tools { display: none; } }
+
+/* The strip on the page's right where comments sit beside their text. */
+.comment-brief-text em { font-style: normal; display: inline-grid; place-items: center; min-width: 17px; height: 17px; margin-right: 5px; padding: 0 4px; border-radius: 9px; font-size: 10.5px; font-weight: 700; color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); vertical-align: 1px; }
+.comment-brief-text i { display: none; }
+
+/* A thread opened beside its marker. */
+.thread-popover { position: fixed; z-index: 60; max-height: calc(100dvh - 80px); overflow-y: auto; padding: 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--mantine-color-body); box-shadow: 0 12px 36px rgb(0 0 0 / 22%); }
+.thread-popover .thread { cursor: default; box-shadow: none; }
+
+/* ---- Comment panels: a calmer, card-based look ---- */
+.side-panel { padding: 0 14px 24px; }
+.side-panel-head { position: sticky; top: 0; z-index: 2; margin: 0 -14px 10px; padding: 12px 14px 10px; background: color-mix(in srgb, var(--mantine-color-body) 92%, transparent); backdrop-filter: blur(8px); }
+
+.comments-panel .thread {
+  position: relative; border: 1px solid color-mix(in srgb, var(--line) 70%, transparent); border-radius: 14px; padding: 12px 12px 10px 16px;
+  background: var(--mantine-color-body); box-shadow: 0 1px 2px rgb(16 24 40 / 5%); margin-bottom: 8px;
+}
+.comments-panel .thread::before { content: ''; position: absolute; left: 6px; top: 12px; bottom: 12px; width: 3px; border-radius: 3px; background: var(--thread-accent, var(--line)); }
+.comments-panel .thread:hover { box-shadow: 0 6px 18px rgb(16 24 40 / 9%); border-color: var(--line); }
+.comments-panel .thread.is-active { outline: 0; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent), 0 6px 18px rgb(16 24 40 / 9%); }
+.comments-panel .thread-quote { background: color-mix(in srgb, var(--thread-accent, var(--line)) 16%, transparent); border-radius: 8px; padding: 5px 9px; font-size: 12.5px; line-height: 1.45; font-weight: 500; }
+.comments-panel .thread .comment + .comment { margin-top: 10px; padding-top: 0; border-top: 0; }
+.comments-panel .thread .comment { position: relative; }
+.comments-panel .thread > .comment ~ .mantine-Collapse-root .comment { padding-left: 12px; margin-left: 9px; border-left: 2px solid color-mix(in srgb, var(--line) 80%, transparent); }
+.comments-panel .comment-avatar { width: 22px; height: 22px; font-size: 11px; }
+.comments-panel .comment-rich { margin-top: 3px; padding-left: 28px; }
+.comments-panel .comment > .mantine-Text-root, .comments-panel .comment > textarea { margin-left: 28px; }
+.comments-panel .thread-add { padding: 6px 10px; border-radius: 999px; background: var(--side); font-size: 12.5px; transition: background .12s; }
+.comments-panel .thread-add:hover { background: var(--hover); }
+
+.composer { border: 1px solid var(--line); background: var(--side); box-shadow: 0 1px 2px rgb(16 24 40 / 4%); transition: border-color .12s, box-shadow .12s; }
+.composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent); background: var(--mantine-color-body); }
+.composer .comment-editor { border: 0; border-radius: 10px; background: transparent; }
+.comment-reply-editor { border-radius: 12px; }
+.composer-quote { border-radius: 0 8px 8px 0; }
+
+.panel-group { margin: 12px 2px 6px; font-size: 11px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.comments-panel > div:first-of-type > .panel-group { margin-top: 2px; }
+.panel-group-toggle { display: flex; align-items: center; gap: 4px; width: 100%; border: 0; background: transparent; padding: 0; cursor: pointer; }
+.panel-group-toggle:hover { color: var(--mantine-color-text); }
+.panel-hint { padding: 0 2px; }
+.panel-empty { display: grid; gap: 4px; justify-items: center; text-align: center; padding: 32px 16px; border: 1px dashed var(--line); border-radius: 14px; }
+.thread-replies-toggle { display: inline-flex; align-items: center; gap: 3px; margin: 6px 0 4px 28px; padding: 0; border: 0; background: transparent; color: var(--accent); font-size: 12px; font-weight: 600; cursor: pointer; }
+.thread-replies-toggle:hover { text-decoration: underline; }
+
+/* ---- Discussion: threads laid out like a forum post with nested replies ---- */
+.discussion-controls { margin-bottom: -2px; }
+.dthread { border: 1px solid color-mix(in srgb, var(--line) 70%, transparent); border-radius: 14px; padding: 12px 12px 8px; margin-bottom: 10px; background: var(--mantine-color-body); box-shadow: 0 1px 2px rgb(16 24 40 / 5%); transition: border-color .12s, box-shadow .12s; }
+.dthread:hover { border-color: var(--line); box-shadow: 0 6px 18px rgb(16 24 40 / 8%); }
+.dthread.is-active { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent); }
+.dthread.is-resolved { background: var(--side); }
+.dthread.is-resolved > .comment .comment-rich { opacity: .7; }
+.dthread .comment-rich { padding-left: 0; margin-top: 6px; font-size: 13.5px; }
+.dthread-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; margin: 8px -6px 0; }
+.dbtn { display: inline-flex; align-items: center; gap: 4px; padding: 4px 9px; border: 0; border-radius: 999px; background: transparent; color: var(--muted); font-size: 12px; font-weight: 600; cursor: pointer; transition: background .12s, color .12s; }
+.dbtn:hover:not(:disabled) { background: var(--hover); color: var(--mantine-color-text); }
+.dbtn:disabled { cursor: default; opacity: .6; }
+.dthread-replies { display: flex; margin-top: 8px; }
+.dthread-rail { flex: none; position: relative; width: 22px; padding: 0; border: 0; background: transparent; cursor: pointer; }
+.dthread-rail::before { content: ''; position: absolute; left: 10px; top: 0; bottom: 0; width: 2px; border-radius: 2px; background: color-mix(in srgb, var(--line) 85%, transparent); transition: background .12s; }
+.dthread-rail:hover::before { background: var(--accent); }
+.dthread-replies-body { flex: 1; min-width: 0; display: grid; gap: 12px; padding-bottom: 4px; }
+.dthread-replies-body .comment-rich { font-size: 13px; }
+.thread-composer { margin-top: 8px; }
+.dnode-flat { display: grid; gap: 12px; }

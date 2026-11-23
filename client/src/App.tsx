@@ -1,3 +1,4 @@
+import { WorkspaceForm } from './WorkspaceForm';
 import { Alert, Button, Loader, Paper, Stack, Text, TextInput, Title, useComputedColorScheme } from '@mantine/core';
 import { useCallback, useEffect, useState } from 'react';
 import { ApiError, api, type Me } from './api';
@@ -40,7 +41,10 @@ export function App() {
   const known = route.name === 'workspace' && !!me?.workspaces.some((w) => w.id === route.wid);
   const firstId = me?.workspaces[0]?.id;
   useEffect(() => {
-    if (me && route.name !== 'share' && !known && firstId) navigate(href.workspace(firstId));
+    if (me && route.name !== 'share' && !known && firstId) {
+      if (route.name === 'workspace') setError("That workspace doesn't exist, or you aren't a member of it.");
+      navigate(href.workspace(firstId));
+    }
   }, [me, route.name, known, firstId]);
 
   const banner = error && (
@@ -91,7 +95,7 @@ export function App() {
       return (
         <>
           {banner}
-          <Shell me={me} workspace={workspace} pageId={route.pageId} dark={dark} onMeChanged={loadMe} onSignOut={signOut} onError={onError} />
+          <Shell me={me} workspace={workspace} pageId={route.pageId} commentId={route.commentId} dark={dark} onMeChanged={loadMe} onSignOut={signOut} onError={onError} />
         </>
       );
     }
@@ -138,32 +142,16 @@ function FirstWorkspace({
   return (
     <div className="auth">
       <Paper withBorder radius="md" p="lg" w={380} maw="calc(100vw - 32px)">
-        <form
-          onSubmit={async (e) => {
-            e.preventDefault();
-            try {
-              await api.createWorkspace(name.trim());
-              onCreated();
-            } catch (err) {
-              onError(errorText(err));
-            }
-          }}
-        >
-          <Stack>
-            <Title order={4}>Create a workspace</Title>
-            <Text size="sm" c="dimmed">
-              A workspace holds your projects and the people you work with. If someone invited you, ask them to add the email you signed up
-              with.
-            </Text>
-            <TextInput label="Workspace name" value={name} onChange={(e) => setName(e.currentTarget.value)} data-autofocus />
-            <Button type="submit" disabled={!name.trim()}>
-              Create
-            </Button>
-            <Button variant="subtle" onClick={onSignOut}>
-              Sign out
-            </Button>
-          </Stack>
-        </form>
+        <WorkspaceForm onCreated={() => onCreated()} onError={onError}>
+          <Title order={4}>Create a workspace</Title>
+          <Text size="sm" c="dimmed">
+            A workspace holds your projects and the people you work with. If someone invited you, ask them to add the email you signed up
+            with.
+          </Text>
+        </WorkspaceForm>
+        <Button variant="subtle" fullWidth mt="sm" onClick={onSignOut}>
+          Sign out
+        </Button>
       </Paper>
     </div>
   );

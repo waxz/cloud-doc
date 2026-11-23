@@ -2,3 +2,10 @@ node_modules
 .wrangler
 .dev.vars
 dist
+
+# files the UI test writes
+failed-*.png
+ui-*.png
+diagram.png
+checklist.pdf
+.test-output

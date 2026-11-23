@@ -4,8 +4,11 @@ import { authStatus, currentUser, getMe, login, logout, registrationInfo, signup
 import type { Env } from './env.js';
 import { HttpError, json } from './http.js';
 import { ensureSchema } from './migrate.js';
+import * as files from './files.js';
 import * as pages from './pages.js';
 import * as settings from './settings.js';
+import { useStorageKey } from './secret.js';
+import { adminStats, flushUsage, recordUsage } from './usage.js';
 import { NAME_HEADER, ROLE_HEADER } from './page-room.js';
 import * as ws from './workspaces.js';
 
@@ -39,18 +42,35 @@ route('GET', '/api/admin/users', (r, e, u) => settings.adminListUsers(e, u));
 route('POST', '/api/admin/users', (r, e, u) => settings.adminCreateUser(r, e, u));
 route('PATCH', '/api/admin/users/:u', (r, e, u, [id]) => settings.adminUpdateUser(r, e, u, id!));
 route('DELETE', '/api/admin/users/:u', (r, e, u, [id]) => settings.adminDeleteUser(e, u, id!));
+route('GET', '/api/admin/shared-storages', (r, e, u) => settings.adminListSharedStorages(e, u));
+route('POST', '/api/admin/shared-storages', (r, e, u) => settings.adminCreateSharedStorage(r, e, u));
+route('POST', '/api/admin/shared-storages/test', (r, e, u) => settings.adminTestSharedStorage(r, e, u, null));
+route('PATCH', '/api/admin/shared-storages/:s', (r, e, u, [s]) => settings.adminUpdateSharedStorage(r, e, u, s!));
+route('DELETE', '/api/admin/shared-storages/:s', (r, e, u, [s]) => settings.adminDeleteSharedStorage(e, u, s!));
+route('POST', '/api/admin/shared-storages/:s/test', (r, e, u, [s]) => settings.adminTestSharedStorage(r, e, u, s!));
+route('PUT', '/api/admin/shared-storages/:s/grants/:u', (r, e, u, [s, id]) => settings.adminSetGrant(r, e, u, s!, id!));
+route('DELETE', '/api/admin/shared-storages/:s/grants/:u', (r, e, u, [s, id]) => settings.adminRemoveGrant(e, u, s!, id!));
+route('GET', '/api/admin/stats', (r, e, u) => adminStats(e, u));
 route('GET', '/api/admin/links', (r, e, u) => settings.adminListLinks(e, u));
+route('GET', '/api/admin/workspaces', (r, e, u) => settings.adminListWorkspaces(e, u));
 route('POST', '/api/admin/links', (r, e, u) => settings.adminCreateLink(r, e, u));
 route('DELETE', '/api/admin/links/:t', (r, e, u, [t]) => settings.adminDeleteLink(e, u, t!));
 
 route('POST', '/api/workspaces', (r, e, u) => ws.createWorkspace(r, e, u));
 route('PATCH', '/api/workspaces/:w', (r, e, u, [w]) => ws.renameWorkspace(r, e, u, w!));
+route('DELETE', '/api/workspaces/:w', (r, e, u, [w]) => ws.deleteWorkspace(e, u, w!));
 route('GET', '/api/workspaces/:w/members', (r, e, u, [w]) => ws.listMembers(e, u, w!));
+route('GET', '/api/workspaces/:w/available-members', (r, e, u, [w], url) => ws.listAvailableMembers(e, u, w!, url.searchParams.get('q') ?? ''));
 route('POST', '/api/workspaces/:w/members', (r, e, u, [w]) => ws.addMember(r, e, u, w!));
 route('PATCH', '/api/workspaces/:w/members/:u', (r, e, u, [w, id]) => ws.setMemberRole(r, e, u, w!, id!));
 route('DELETE', '/api/workspaces/:w/members/:u', (r, e, u, [w, id]) => ws.removeMember(e, u, w!, id!));
 route('DELETE', '/api/workspaces/:w/invites/:email', (r, e, u, [w, m]) => ws.removeInvite(e, u, w!, m!));
+route('GET', '/api/workspaces/:w/storages', (r, e, u, [w]) => ws.listWorkspaceStorages(e, u, w!));
+route('PUT', '/api/workspaces/:w/storages', (r, e, u, [w]) => ws.setWorkspaceStorages(r, e, u, w!));
+route('PUT', '/api/workspaces/:w/storages/:s', (r, e, u, [w, s]) => ws.bindWorkspaceStorage(r, e, u, w!, s!));
+route('DELETE', '/api/workspaces/:w/storages/:s', (r, e, u, [w, s]) => ws.unbindWorkspaceStorage(e, u, w!, s!));
 route('GET', '/api/workspaces/:w/projects', (r, e, u, [w]) => ws.listProjects(e, u, w!));
+route('GET', '/api/workspaces/:w/tree', (r, e, u, [w]) => ws.listWorkspacePages(e, u, w!));
 route('POST', '/api/workspaces/:w/projects', (r, e, u, [w]) => ws.createProject(r, e, u, w!));
 route('GET', '/api/workspaces/:w/search', (r, e, u, [w], url) => pages.search(e, u, w!, url.searchParams.get('q') ?? ''));
 
@@ -64,18 +84,30 @@ route('POST', '/api/projects/:p/pages', (r, e, u, [p]) => pages.createPage(r, e,
 route('GET', '/api/pages/:id', (r, e, u, [id]) => pages.getPage(r, e, u, id!));
 route('PATCH', '/api/pages/:id', (r, e, u, [id]) => pages.movePage(r, e, u, id!));
 route('DELETE', '/api/pages/:id', (r, e, u, [id]) => pages.deletePage(r, e, u, id!));
-route('POST', '/api/pages/:id/files', (r, e, u, [id]) => pages.uploadFile(r, e, u, id!));
-route('GET', '/api/pages/:id/files', (r, e, u, [id]) => pages.listFiles(r, e, u, id!));
-route('GET', '/api/files/:f/:name', (r, e, u, [f]) => pages.downloadFile(r, e, u, f!));
-route('DELETE', '/api/files/:f', (r, e, u, [f]) => pages.deleteFile(r, e, u, f!));
+route('POST', '/api/pages/:id/files', (r, e, u, [id]) => files.uploadFile(r, e, u, id!));
+route('GET', '/api/workspaces/:w/files', (r, e, u, [w]) => files.listWorkspaceFiles(e, u, w!));
+route('GET', '/api/pages/:id/delete-preview', (r, e, u, [id]) => files.deletePreview(r, e, u, id!));
+route('GET', '/api/pages/:id/files', (r, e, u, [id]) => files.listFiles(r, e, u, id!));
+route('GET', '/api/files/:f/:name', (r, e, u, [f]) => files.downloadFile(r, e, u, f!));
+route('DELETE', '/api/files/:f', (r, e, u, [f]) => files.deleteFile(r, e, u, f!));
 route('GET', '/api/pages/:id/versions', (r, e, u, [id]) => pages.listVersions(r, e, u, id!));
 route('POST', '/api/pages/:id/versions', (r, e, u, [id]) => pages.saveVersion(r, e, u, id!));
 route('GET', '/api/pages/:id/versions/:v/content', (r, e, u, [id, v]) => pages.versionContent(r, e, u, id!, v!));
 route('POST', '/api/pages/:id/versions/:v/restore', (r, e, u, [id, v]) => pages.restoreVersion(r, e, u, id!, v!));
 route('GET', '/api/pages/:id/comments', (r, e, u, [id]) => pages.listComments(r, e, u, id!));
 route('POST', '/api/pages/:id/comments', (r, e, u, [id]) => pages.addComment(r, e, u, id!));
+route('GET', '/api/pages/:id/comment-members', (r, e, u, [id]) => pages.listCommentMembers(r, e, u, id!));
 route('PATCH', '/api/comments/:c', (r, e, u, [c]) => pages.updateComment(r, e, u, c!));
 route('DELETE', '/api/comments/:c', (r, e, u, [c]) => pages.deleteComment(r, e, u, c!));
+route('GET', '/api/inbox', (r, e, u) => pages.inbox(e, u));
+route('GET', '/api/notifications', (r, e, u) => pages.listNotifications(e, u));
+route('PATCH', '/api/notifications/:n', (r, e, u, [id]) => pages.markNotificationRead(r, e, u, id!));
+route('GET', '/api/messages', (r, e, u) => pages.listMessages(e, u));
+route('POST', '/api/messages', (r, e, u) => pages.sendMessage(r, e, u));
+route('PATCH', '/api/messages/:m', (r, e, u, [id]) => pages.markMessageRead(r, e, u, id!));
+route('GET', '/api/todos', (r, e, u) => pages.listTodos(e, u));
+route('POST', '/api/todos', (r, e, u) => pages.addTodo(r, e, u));
+route('PATCH', '/api/todos/:t', (r, e, u, [id]) => pages.updateTodo(r, e, u, id!));
 route('GET', '/api/pages/:id/shares', (r, e, u, [id]) => pages.listShares(r, e, u, id!));
 route('POST', '/api/pages/:id/shares', (r, e, u, [id]) => pages.createShare(r, e, u, id!));
 route('DELETE', '/api/shares/:t', (r, e, u, [t]) => pages.deleteShare(r, e, u, t!));
@@ -83,6 +115,10 @@ route('GET', '/api/share/:t', (r, e, u, [t]) => pages.openShare(e, u, t!));
 
 /** Live sync: only for people who can view the page, with their role passed to the room. */
 async function sync(req: Request, env: Env, user: User | null): Promise<Response> {
+  // Only this site's pages may open a live connection (the session cookie is Lax, which already
+  // keeps it off cross-site sockets; this is the second lock).
+  const origin = req.headers.get('origin');
+  if (origin && new URL(origin).host !== new URL(req.url).host) return new Response('forbidden', { status: 403 });
   const res = await routePartykitRequest(req, env as unknown as Record<string, unknown>, {
     onBeforeConnect: async (r, lobby) => {
       try {
@@ -103,7 +139,7 @@ async function sync(req: Request, env: Env, user: User | null): Promise<Response
 }
 
 export default {
-  async fetch(req: Request, env: Env): Promise<Response> {
+  async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
     const p = url.pathname;
     // Clients never get to set these; only onBeforeConnect does.
@@ -113,21 +149,40 @@ export default {
       headers.delete(NAME_HEADER);
       req = new Request(req, { headers });
     }
+    let user: User | null = null;
+    let res: Response;
     try {
+      useStorageKey(env.STORAGE_KEY);
       await ensureSchema(env.DB);
-      const user = await currentUser(req, env);
-      if (p.startsWith('/parties/')) return await sync(req, env, user);
-      for (const [method, re, handler] of routes) {
-        const m = re.exec(p);
-        if (m && (req.method === method || (method === 'GET' && req.method === 'HEAD'))) {
-          return await handler(req, env, user, m.slice(1).map(decodeURIComponent), url);
+      user = await currentUser(req, env);
+      if (p.startsWith('/parties/')) res = await sync(req, env, user);
+      else {
+        res = json({ error: 'not found' }, 404);
+        for (const [method, re, handler] of routes) {
+          const m = re.exec(p);
+          if (m && (req.method === method || (method === 'GET' && req.method === 'HEAD'))) {
+            res = await handler(req, env, user, m.slice(1).map(decodeURIComponent), url);
+            break;
+          }
         }
       }
-      return json({ error: 'not found' }, 404);
     } catch (err) {
-      if (err instanceof HttpError) return json({ error: err.message }, err.status);
-      console.error(err);
-      return json({ error: 'internal error' }, 500);
+      if (err instanceof HttpError) res = json({ error: err.message }, err.status);
+      else {
+        console.error(err);
+        res = json({ error: 'internal error' }, 500);
+      }
     }
+    if (p.startsWith('/api/') || p.startsWith('/parties/')) {
+      // Private data must not be kept by caches or sniffed into another type.
+      if (res.status !== 101 && !res.headers.has('cache-control')) {
+        res = new Response(res.body, res);
+        res.headers.set('cache-control', 'no-store');
+        res.headers.set('x-content-type-options', 'nosniff');
+      }
+      recordUsage(user, req, res);
+      ctx.waitUntil(flushUsage(env));
+    }
+    return res;
   },
 } satisfies ExportedHandler<Env>;

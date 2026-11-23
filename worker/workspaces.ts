@@ -1,8 +1,10 @@
-import { isRole, type Role, requireProject, requireWorkspace, type WorkspaceRole } from './access.js';
+import { isRole, type Role, requireProject, requireWorkspace, type WorkspaceRole, visibleProjects } from './access.js';
 import { requireUser, type User } from './auth.js';
 import type { Env } from './env.js';
 import { HttpError, json, newId, noContent, readJson, str } from './http.js';
 import { deletePageTree } from './pages.js';
+import { deleteWorkspaceData } from './storage.js';
+import { usableStorage } from './settings.js';
 
 // ---------- workspaces and members ----------
 
@@ -12,12 +14,31 @@ export async function createWorkspace(req: Request, env: Env, u: User | null): P
     const row = await env.DB.prepare('SELECT can_create_workspaces FROM users WHERE id = ?').bind(user.id).first<{ can_create_workspaces: number }>();
     if (!row?.can_create_workspaces) throw new HttpError(403, 'your account may not create workspaces');
   }
-  const name = str((await readJson<{ name?: string }>(req)).name, 'name', 80);
+  const body = await readJson<{ name?: string; storageId?: string }>(req);
+  const name = str(body.name, 'name', 80);
+  // A workspace keeps its files and page history in a storage, so it can't exist without one: the user's
+  // own, or a shared storage the admin allocated to them. Members then use that storage without their own.
+  if (typeof body.storageId !== 'string' || !body.storageId) {
+    throw new HttpError(400, 'choose a storage for the workspace: one of yours, or a shared one an admin allocated to you');
+  }
+  const storage = await usableStorage(env, user.id, body.storageId);
+  if (!storage) throw new HttpError(400, 'that storage is not yours and was not shared with you');
+  const conflict = await env.DB.prepare(
+    `SELECT 1 FROM workspace_members wm JOIN workspaces w ON w.id = wm.workspace_id
+     WHERE wm.user_id = ? AND wm.role = 'owner' AND lower(w.name) = lower(?) LIMIT 1`
+  ).bind(user.id, name).first();
+  if (conflict) throw new HttpError(409, `A workspace named "${name}" already exists in your account`);
   const id = newId();
   const now = Date.now();
   await env.DB.batch([
     env.DB.prepare('INSERT INTO workspaces (id, name, created_at) VALUES (?, ?, ?)').bind(id, name, now),
     env.DB.prepare("INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, 'owner')").bind(id, user.id),
+    env.DB.prepare('INSERT INTO workspace_storage_bindings (workspace_id, storage_id, created_at, granted_user_id) VALUES (?, ?, ?, ?)').bind(
+      id,
+      storage.id,
+      now,
+      storage.shared ? user.id : null
+    ),
     // A first project everyone in the workspace can edit.
     env.DB.prepare("INSERT INTO projects (id, workspace_id, name, default_role, created_at) VALUES (?, ?, 'General', 'editor', ?)").bind(
       newId(),
@@ -25,14 +46,33 @@ export async function createWorkspace(req: Request, env: Env, u: User | null): P
       now
     ),
   ]);
-  return json({ id, name, role: 'owner' }, 201);
+  return json({ id, name, displayName: name, ownerName: user.name, role: 'owner' }, 201);
 }
 
 export async function renameWorkspace(req: Request, env: Env, u: User | null, wid: string): Promise<Response> {
-  await requireWorkspace(env, requireUser(u), wid, true);
+  const user = requireUser(u);
+  await requireWorkspace(env, user, wid, true);
   const name = str((await readJson<{ name?: string }>(req)).name, 'name', 80);
+  const conflict = await env.DB.prepare(
+    `SELECT 1 FROM workspace_members wm JOIN workspaces w ON w.id = wm.workspace_id
+     WHERE wm.user_id = ? AND wm.role = 'owner' AND w.id != ? AND lower(w.name) = lower(?) LIMIT 1`
+  ).bind(user.id, wid, name).first();
+  if (conflict) throw new HttpError(409, `A workspace named "${name}" already exists in your account`);
   await env.DB.prepare('UPDATE workspaces SET name = ? WHERE id = ?').bind(name, wid).run();
   return json({ id: wid, name });
+}
+
+export async function deleteWorkspace(env: Env, u: User | null, wid: string): Promise<Response> {
+  const user = requireUser(u);
+  const role = await requireWorkspace(env, user, wid, true);
+  if (role !== 'owner') throw new HttpError(403, 'only the workspace owner can delete it');
+  // Its files and page history, from every storage that holds them, while the rows still say where.
+  await deleteWorkspaceData(env, wid);
+  const { results: projects } = await env.DB.prepare('SELECT id FROM projects WHERE workspace_id = ?')
+    .bind(wid).all<{ id: string }>();
+  for (const project of projects) await deleteProject(env, u, project.id);
+  await env.DB.prepare('DELETE FROM workspaces WHERE id = ?').bind(wid).run();
+  return noContent();
 }
 
 export async function listMembers(env: Env, u: User | null, wid: string): Promise<Response> {
@@ -47,6 +87,26 @@ export async function listMembers(env: Env, u: User | null, wid: string): Promis
     .bind(wid)
     .all();
   return json({ members: members.results, invites: invites.results });
+}
+
+export async function listAvailableMembers(env: Env, u: User | null, wid: string, q: string): Promise<Response> {
+  await requireWorkspace(env, requireUser(u), wid, true);
+  const query = q.trim().toLowerCase();
+  const pattern = `%${query}%`;
+  const users = await env.DB.prepare(
+    `SELECT u.id, u.name, u.email
+     FROM users u
+     WHERE u.disabled = 0
+       AND NOT EXISTS (
+         SELECT 1 FROM workspace_members wm
+         WHERE wm.workspace_id = ? AND wm.user_id = u.id
+       )
+       AND (? = '' OR lower(u.name) LIKE ? OR lower(u.email) LIKE ?)
+     ORDER BY u.name LIMIT 50`
+  )
+    .bind(wid, query, pattern, pattern)
+    .all();
+  return json(users.results);
 }
 
 const isMemberRole = (r: unknown): r is 'admin' | 'member' => r === 'admin' || r === 'member';
@@ -112,28 +172,105 @@ export async function removeInvite(env: Env, u: User | null, wid: string, email:
   return noContent();
 }
 
+// ---------- workspace storage bindings ----------
+
+export async function listWorkspaceStorages(env: Env, u: User | null, wid: string): Promise<Response> {
+  const user = requireUser(u);
+  await requireWorkspace(env, user, wid);
+  // What this user could add: their own storages and shared ones allocated to them. Storages already bound
+  // are listed by name too, so members can see where the workspace keeps its data.
+  const { results: available } = await env.DB.prepare(
+    `SELECT s.id, s.name, s.url, s.username, s.password, s.shared FROM storages s
+     WHERE (s.user_id = ?1 AND s.shared = 0)
+        OR (s.shared = 1 AND EXISTS (SELECT 1 FROM storage_grants g WHERE g.storage_id = s.id AND g.user_id = ?1))
+        OR s.id IN (SELECT storage_id FROM workspace_storage_bindings WHERE workspace_id = ?2)
+     ORDER BY s.created_at`
+  ).bind(user.id, wid).all<{ id: string; name: string; url: string; username: string; password: string; shared: number; user_id: string }>();
+  const { results: assigned } = await env.DB.prepare(
+    `SELECT storage_id FROM workspace_storage_bindings WHERE workspace_id = ? ORDER BY created_at`
+  ).bind(wid).all<{ storage_id: string }>();
+  return json({
+    storages: available.map((s) => ({
+      id: s.id,
+      name: s.name,
+      // Another person's address and login are theirs; shared storages keep theirs from users.
+      ...(s.shared ? {} : { url: s.url, username: s.username, hasPassword: !!s.password }),
+      shared: !!s.shared,
+    })),
+    assigned: assigned.map((s) => s.storage_id),
+  });
+}
+
+/** A storage that may be bound to a workspace by this user: theirs, or shared and allocated to them. */
+async function bindableStorage(env: Env, user: User, storageId: string) {
+  const storage = await usableStorage(env, user.id, storageId);
+  if (!storage) throw new HttpError(404, 'no such storage');
+  return storage;
+}
+
+export async function setWorkspaceStorages(req: Request, env: Env, u: User | null, wid: string): Promise<Response> {
+  const user = requireUser(u);
+  await requireWorkspace(env, user, wid, true);
+  const body = await readJson<{ storageIds?: unknown }>(req);
+  if (!Array.isArray(body.storageIds)) throw new HttpError(400, 'storageIds must be an array');
+  const ids = [...new Set(body.storageIds.filter((id): id is string => typeof id === 'string'))];
+  if (ids.length === 0) throw new HttpError(400, 'a workspace needs at least one storage');
+  const { results: current } = await env.DB.prepare('SELECT storage_id FROM workspace_storage_bindings WHERE workspace_id = ?').bind(wid).all<{ storage_id: string }>();
+  const already = new Set(current.map((c) => c.storage_id));
+  const fresh: { id: string; shared: boolean }[] = [];
+  for (const id of ids) if (!already.has(id)) fresh.push({ id, shared: !!(await bindableStorage(env, user, id)).shared });
+  await env.DB.batch([
+    // Bindings made by someone else stay when they're kept in the list; they're left exactly as they were.
+    ...current.filter((c) => !ids.includes(c.storage_id)).map((c) => env.DB.prepare('DELETE FROM workspace_storage_bindings WHERE workspace_id = ? AND storage_id = ?').bind(wid, c.storage_id)),
+    ...fresh.map((f) => env.DB.prepare(
+      'INSERT INTO workspace_storage_bindings (workspace_id, storage_id, created_at, granted_user_id) VALUES (?, ?, ?, ?)'
+    ).bind(wid, f.id, Date.now(), f.shared ? user.id : null)),
+  ]);
+  return noContent();
+}
+
+export async function bindWorkspaceStorage(req: Request, env: Env, u: User | null, wid: string, sid: string): Promise<Response> {
+  const user = requireUser(u);
+  await requireWorkspace(env, user, wid, true);
+  const storage = await bindableStorage(env, user, sid);
+  await env.DB.prepare(
+    'INSERT INTO workspace_storage_bindings (workspace_id, storage_id, created_at, granted_user_id) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING'
+  ).bind(wid, sid, Date.now(), storage.shared ? user.id : null).run();
+  return noContent();
+}
+
+export async function unbindWorkspaceStorage(env: Env, u: User | null, wid: string, sid: string): Promise<Response> {
+  await requireWorkspace(env, requireUser(u), wid, true);
+  const count = await env.DB.prepare('SELECT COUNT(*) AS n FROM workspace_storage_bindings WHERE workspace_id = ?').bind(wid).first<{ n: number }>();
+  if ((count?.n ?? 0) <= 1) throw new HttpError(409, 'a workspace needs a storage: add another one before removing this one');
+  await env.DB.prepare('DELETE FROM workspace_storage_bindings WHERE workspace_id = ? AND storage_id = ?').bind(wid, sid).run();
+  return noContent();
+}
+
 // ---------- projects ----------
 
 /** Projects this user can see, with their role in each. */
 export async function listProjects(env: Env, u: User | null, wid: string): Promise<Response> {
-  const user = requireUser(u);
-  const wsRole = await requireWorkspace(env, user, wid);
-  const { results } = await env.DB.prepare(
-    `SELECT p.id, p.name, p.default_role, pm.role AS member_role
-     FROM projects p LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?
-     WHERE p.workspace_id = ? ORDER BY p.created_at`
-  )
-    .bind(user.id, wid)
-    .all<{ id: string; name: string; default_role: Role | null; member_role: Role | null }>();
-  const rank = (r: Role | null) => (r ? ['viewer', 'commenter', 'editor', 'admin'].indexOf(r) : -1);
-  const projects = results
-    .map((p) => {
-      const role: Role | null =
-        wsRole === 'member' ? (rank(p.member_role) >= rank(p.default_role) ? p.member_role : p.default_role) : 'admin';
-      return { id: p.id, name: p.name, defaultRole: p.default_role, role };
-    })
-    .filter((p) => p.role !== null);
-  return json(projects);
+  return json(await visibleProjects(env, requireUser(u), wid));
+}
+
+/**
+ * Every page of every project the caller can see, grouped by project: the sidebar's whole
+ * tree in one request, instead of one request per project.
+ */
+export async function listWorkspacePages(env: Env, u: User | null, wid: string): Promise<Response> {
+  const projects = await visibleProjects(env, requireUser(u), wid);
+  const pagesByProject: Record<string, unknown[]> = Object.fromEntries(projects.map((p) => [p.id, []]));
+  if (projects.length) {
+    const { results } = await env.DB.prepare(
+      `SELECT id, project_id, parent_id, title, icon, position, updated_at FROM pages
+       WHERE project_id IN (SELECT id FROM projects WHERE workspace_id = ?) ORDER BY position`
+    )
+      .bind(wid)
+      .all<{ project_id: string }>();
+    for (const page of results) pagesByProject[page.project_id]?.push(page);
+  }
+  return json({ projects, pages: pagesByProject });
 }
 
 const parseDefaultRole = (v: unknown): Role | null => {

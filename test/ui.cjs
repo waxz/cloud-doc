@@ -6,7 +6,8 @@ const { chromium, devices } = require('playwright');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const B = process.env.WIKI_URL ?? 'http://127.0.0.1:8787';
-const SHOTS = process.env.SHOTS ?? '.';
+const SHOTS = process.env.SHOTS ?? '.test-output';
+fs.mkdirSync(SHOTS, { recursive: true });
 const run = Date.now().toString(36);
 const opened = []; // pages, for a screenshot of each when something fails
 
@@ -65,13 +66,10 @@ const opened = []; // pages, for a screenshot of each when something fails
   await alice.getByLabel(/^Name/).fill('Alice');
   await alice.getByRole('textbox', { name: 'Password' }).fill('correct horse battery');
   await btn(alice, 'Create account').click();
+  // a workspace needs a storage: Alice adds hers right there, tests it, then creates the workspace
   await alice.getByLabel('Workspace name').fill('Acme');
-  await btn(alice, 'Create').click();
-  await nav(alice).getByText('General', { exact: true }).waitFor();
-  console.log('✓ first account set up as admin, workspace created');
-
-  // --- her own WebDAV storage ---
-  await userMenu(alice, 'Storage');
+  assert.equal(await btn(alice, 'Create').isDisabled(), true, 'no storage, no workspace');
+  await btn(alice, 'Add a storage').click();
   const dlg = alice.getByRole('dialog');
   await dlg.getByPlaceholder('My drive').fill('Home drive');
   await dlg.getByLabel('WebDAV folder URL').fill(`${dav.url}/alice`);
@@ -83,7 +81,9 @@ const opened = []; // pages, for a screenshot of each when something fails
   await dlg.getByText('Default', { exact: true }).waitFor();
   await shot(alice, 'ui-storage');
   await alice.keyboard.press('Escape');
-  console.log('✓ storage added and tested');
+  await btn(alice, 'Create').click();
+  await nav(alice).getByText('General', { exact: true }).waitFor();
+  console.log('✓ first account set up as admin; storage added and tested; workspace created on it');
 
   // --- a page with an emoji, text and uploads from the tree ---
   await newPage(alice, 'General');
@@ -99,7 +99,7 @@ const opened = []; // pages, for a screenshot of each when something fails
   await alice.getByRole('menuitem', { name: 'Upload file…' }).click();
   await (await chooser).setFiles([`${SHOTS}/diagram.png`, `${SHOTS}/checklist.pdf`]);
   await alice.waitForFunction(() => [...document.querySelectorAll('.bn-editor img')].some((i) => i.complete && i.naturalWidth > 0), null, { timeout: 15000 });
-  await alice.locator('.bn-editor iframe.pdf-frame').waitFor({ timeout: 10000 });
+  await alice.locator('.bn-editor .pdf-reader').waitFor({ timeout: 10000 });
   assert.ok([...dav.files.keys()].some((k) => k.startsWith('/alice/cloud-doc/') && k.endsWith('diagram.png')), 'image stored in her WebDAV');
   await alice.waitForTimeout(800);
   await shot(alice, 'ui-page-media');
@@ -117,14 +117,7 @@ const opened = []; // pages, for a screenshot of each when something fails
   await alice.locator('.user-card').filter({ hasText: 'Alice' }).waitFor();
   await shot(alice, 'ui-admin-users');
   await alice.keyboard.press('Escape');
-  // ...and adds him to the workspace before he has an account.
-  await alice.locator('.ws-switch').click();
-  await alice.getByRole('menuitem', { name: 'Workspace settings' }).click();
-  await alice.getByLabel('Add by email').fill(bobEmail);
-  await btn(alice, 'Add').click();
-  await alice.getByText('has no account yet').waitFor();
-  await alice.keyboard.press('Escape');
-  console.log('✓ admin: registration link, users list, workspace invite');
+  console.log('✓ admin: registration link, users list');
 
   // --- Bob registers through the link ---
   const bob = await ctx('bob');
@@ -137,6 +130,15 @@ const opened = []; // pages, for a screenshot of each when something fails
   await bob.getByLabel(/^Name/).fill('Bob');
   await bob.getByRole('textbox', { name: 'Password' }).fill('correct horse battery');
   await btn(bob, 'Create account').click();
+  // Registering doesn't join a workspace: Alice adds Bob, then his sidebar fills in.
+  await alice.locator('.ws-switch').click();
+  await alice.getByRole('menuitem', { name: 'Workspace settings' }).click();
+  await alice.getByRole('combobox', { name: 'Add registered member' }).fill('Bob');
+  await alice.getByRole('option', { name: new RegExp('Bob') }).click();
+  await btn(alice, 'Add').click();
+  await alice.getByText('Bob', { exact: true }).waitFor();
+  await alice.keyboard.press('Escape');
+  await bob.reload();
   await treeRow(bob, 'Roadmap').click();
   await editorHas(bob, 'Ship the beta in March.');
   await bob.waitForFunction(() => [...document.querySelectorAll('.bn-editor img')].some((i) => i.complete && i.naturalWidth > 0), null, { timeout: 10000 });
@@ -145,29 +147,53 @@ const opened = []; // pages, for a screenshot of each when something fails
   await bob.keyboard.press('Enter');
   await bob.keyboard.type('Bob: docs need a pass first.');
   await editorHas(alice, 'docs need a pass');
+  console.log('✓ registered member selected from searchable dropdown');
   console.log('✓ registration link → account → workspace; images readable; live co-editing');
 
-  // --- comment from the formatting toolbar ---
+  // --- highlight comment from the formatting toolbar, then a reply and resolve ---
   await bob.locator('.bn-editor').getByText('Ship the beta in March.').dblclick();
   await bob.locator('.bn-formatting-toolbar').getByRole('button', { name: 'Comment' }).click();
   const panel = bob.locator('.side-panel');
-  await panel.getByPlaceholder('Add a comment…').fill('Is March realistic?');
+  await panel.getByText('Highlights').first().waitFor();
+  await panel.locator('.composer .comment-editor .bn-editor').click();
+  await bob.keyboard.type('Is March realistic?');
   await panel.getByRole('button', { name: 'Comment', exact: true }).click();
-  await alice.getByRole('button', { name: 'Comments' }).click();
+  await alice.getByRole('button', { name: 'Highlights', exact: true }).click();
   await alice.getByText('Is March realistic?').waitFor({ timeout: 8000 });
-  await alice.getByPlaceholder('Reply…').fill('Yes if docs land by Feb.');
-  await btn(alice, 'Reply').click();
+  await alice.locator('.dthread-actions').getByRole('button', { name: 'Reply', exact: true }).first().click();
+  await alice.locator('.thread-composer .bn-editor').click();
+  await alice.keyboard.type('Yes if docs land by Feb.');
+  await alice.locator('.thread-composer').getByRole('button', { name: 'Reply', exact: true }).click();
   await bob.getByText('Yes if docs land by Feb.').waitFor({ timeout: 8000 });
   await shot(bob, 'ui-comments');
   await btn(alice, 'Resolve').click();
-  await alice.getByText('No open comments.').waitFor();
-  console.log('✓ comments: toolbar button quotes the selection, live reply, resolve');
+  await alice.getByRole('button', { name: /Resolved · 1/ }).click();
+  await alice.getByText(/Resolved by/).waitFor();
+  // and a page-level discussion
+  await alice.getByRole('button', { name: 'Discussion', exact: true }).click();
+  await alice.locator('.composer .comment-editor .bn-editor').click();
+  await alice.keyboard.type('Kickoff #plan with https://example.com');
+  await btn(alice, 'Post').click();
+  await alice.locator('.comment-token-tag', { hasText: '#plan' }).waitFor();
+  await alice.locator('.comment-link', { hasText: 'https://example.com' }).waitFor();
+  // a reply to a reply nests under it
+  await alice.getByRole('button', { name: 'Reply', exact: true }).first().click();
+  await alice.locator('.thread-composer .bn-editor').click();
+  await alice.keyboard.type('First answer');
+  await alice.locator('.thread-composer').getByRole('button', { name: 'Reply', exact: true }).click();
+  await alice.getByText('First answer').waitFor();
+  await alice.locator('.dnode').getByRole('button', { name: 'Reply', exact: true }).first().click();
+  await alice.locator('.thread-composer .bn-editor').click();
+  await alice.keyboard.type('Answer to the answer');
+  await alice.locator('.thread-composer').getByRole('button', { name: 'Reply', exact: true }).click();
+  await alice.locator('.dnode .dnode', { hasText: 'Answer to the answer' }).waitFor();
+  console.log('✓ comments: highlight from the toolbar, live reply, resolve, discussion with tag and link');
 
   // --- history in Alice's storage ---
   await alice.getByRole('button', { name: 'History' }).click();
   await btn(alice, 'Save a version now').click();
   await alice.locator('.version').first().waitFor();
-  await alice.click('.bn-editor p >> nth=0');
+  await alice.click('.bn-editor p >> nth=0', { position: { x: 4, y: 8 } }); // not on the highlighted word, which would open its comment
   await alice.keyboard.press('End');
   await alice.keyboard.press('Enter');
   await alice.keyboard.type('Temporary note to undo.');
@@ -180,10 +206,17 @@ const opened = []; // pages, for a screenshot of each when something fails
   console.log('✓ history: save, preview, restore reaches other editors');
 
   // --- files panel ---
-  await alice.getByRole('button', { name: 'Files' }).click();
+  await alice.getByRole('button', { name: 'Files', exact: true }).click();
   await alice.locator('.side-panel').getByText('diagram.png').waitFor();
   await alice.locator('.side-panel').getByText('checklist.pdf').waitFor();
-  console.log('✓ files panel lists the uploads');
+  // the workspace's Files window lists them too, with where they are used
+  await alice.getByRole('button', { name: 'All files of the workspace…' }).click();
+  const filesDialog = alice.getByRole('dialog');
+  await filesDialog.getByText('diagram.png').waitFor();
+  await filesDialog.getByText('Used in 1 page').first().waitFor();
+  await shot(alice, 'ui-workspace-files');
+  await alice.keyboard.press('Escape');
+  console.log('✓ files panel lists the uploads; the workspace Files window shows where they are used');
 
   // --- tree: drag a page into another, reorder ---
   await newPage(alice, 'General');
@@ -243,8 +276,8 @@ const opened = []; // pages, for a screenshot of each when something fails
   await phone.waitForTimeout(500);
   await shot(phone, 'ui-phone-page');
   await phone.getByRole('button', { name: 'Page actions' }).click();
-  await phone.getByRole('menuitem', { name: 'Comments' }).click();
-  await phone.getByRole('dialog').getByText('Resolved').waitFor();
+  await phone.getByRole('menuitem', { name: 'Highlights' }).click();
+  await phone.getByRole('dialog').locator('.comments-panel').waitFor();
   await phone.waitForTimeout(400);
   await shot(phone, 'ui-phone-comments');
   console.log('✓ phone: drawer navigation, page with media, panels as bottom sheets');

@@ -106,51 +106,32 @@ function Profile({ settings, onSaved, onError }: { settings: Settings; onSaved: 
 }
 
 function StorageTab({ settings, onChanged, onError }: { settings: Settings; onChanged: () => void; onError: (m: string) => void }) {
-  const limit = settings.storageLimit;
-  const options = [{ value: '', label: 'Default storage' }].concat(settings.storages.map((s) => ({ value: s.id, label: s.name })));
   return (
     <Stack>
-      <div>
-        <Group justify="space-between" mb={4}>
-          <Text size="sm" fw={500}>
-            Used
-          </Text>
-          <Text size="sm" c="dimmed">
-            {formatBytes(settings.usage)} {limit != null ? `of ${formatBytes(limit)}` : '· no limit'}
-          </Text>
-        </Group>
-        {limit != null && <Progress value={limit ? Math.min(100, (settings.usage / limit) * 100) : 100} color={settings.usage >= (limit ?? 0) ? 'red' : 'blue'} />}
-      </div>
+      <Group justify="space-between">
+        <Text size="sm" fw={500}>Stored by you</Text>
+        <Text size="sm" c="dimmed">{formatBytes(settings.usage)} in total</Text>
+      </Group>
       <Text size="sm" c="dimmed">
-        Files you upload and page history you save are kept in your own WebDAV storage, such as a cloud-drive drive or Nextcloud. Add one, then
-        pick it per workspace if you like.
+        A workspace keeps its files and page history in a WebDAV storage, such as a cloud-drive drive or Nextcloud. You pick one when you create a
+        workspace; people you add to it use that storage without needing their own.
       </Text>
-      <Title order={6}>Your storages</Title>
-      <StorageManager uid="me" storages={settings.storages} defaultId={settings.defaultStorageId} onChanged={onChanged} onError={onError} />
-      {settings.workspaces.length > 0 && settings.storages.length > 0 && (
+      {settings.sharedStorages.length > 0 && (
         <>
-          <Title order={6} mt="sm">
-            Storage per workspace
-          </Title>
-          {settings.workspaces.map((w) => (
-            <Select
-              key={w.id}
-              label={w.name}
-              data={options}
-              value={w.storage_id ?? ''}
-              allowDeselect={false}
-              onChange={async (v) => {
-                try {
-                  await api.setWorkspaceStorage('me', w.id, v || null);
-                  onChanged();
-                } catch (e) {
-                  onError(errorText(e));
-                }
-              }}
-            />
+          <Title order={6}>Shared with you by the admin</Title>
+          {settings.sharedStorages.map((s) => (
+            <div key={s.id}>
+              <Group justify="space-between" mb={4}>
+                <Text size="sm" fw={500}>{s.name}</Text>
+                <Text size="sm" c="dimmed">{formatBytes(s.used)} {s.limit_bytes != null ? `of ${formatBytes(s.limit_bytes)}` : '· no limit'}</Text>
+              </Group>
+              {s.limit_bytes != null && <Progress value={s.limit_bytes ? Math.min(100, (s.used / s.limit_bytes) * 100) : 100} color={s.used >= s.limit_bytes ? 'red' : 'blue'} />}
+            </div>
           ))}
         </>
       )}
+      <Title order={6}>Your storages</Title>
+      <StorageManager uid="me" storages={settings.storages} defaultId={settings.defaultStorageId} onChanged={onChanged} onError={onError} />
     </Stack>
   );
 }

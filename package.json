@@ -1,16 +1,19 @@
 {
   "name": "cloud-doc",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Collaborative wiki on Cloudflare Workers, Durable Objects and D1, with files and history in each user's WebDAV storage.",
   "scripts": {
+    "predev": "node scripts/ensure-storage-key.mjs --local",
     "dev": "wrangler dev",
     "build": "vite build",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
     "test:api": "node test/api.mjs",
-    "test:ui": "node test/ui.cjs"
+    "test:ui": "node test/ui.cjs",
+    "predeploy": "node scripts/ensure-storage-key.mjs --remote",
+    "postdeploy": "node scripts/ensure-storage-key.mjs --remote --strict"
   },
   "dependencies": {
     "@blocknote/core": "^0.57.0",
@@ -19,7 +22,9 @@
     "@mantine/core": "^9.8.1",
     "@mantine/hooks": "^9.8.1",
     "@tabler/icons-react": "^3.52.0",
+    "katex": "^0.19.1",
     "partyserver": "^0.5.10",
+    "pdfjs-dist": "^6.5.438",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "y-partyserver": "^2.2.0",

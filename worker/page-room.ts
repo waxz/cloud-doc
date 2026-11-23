@@ -3,8 +3,10 @@ import { YServer } from 'y-partyserver';
 import * as Y from 'yjs';
 import { type Role, atLeast } from './access.js';
 import type { Env } from './env.js';
+import { useStorageKey } from './secret.js';
 import { HttpError, json, newId } from './http.js';
 import { WebDav, checkQuota, historyKey, resolveStorage, storageById, workspaceOfPage } from './storage.js';
+import { fileIdsIn, syncFileRefs } from './files.js';
 
 /** BlockNote keeps the document in this XML fragment; the title lives in `meta`. */
 export const FRAGMENT = 'document-store';
@@ -80,28 +82,41 @@ export class PageRoom extends YServer<Env> {
 
   async onSave(): Promise<void> {
     this.ensureTables();
-    const state = Y.encodeStateAsUpdate(this.document);
-    this.ctx.storage.transactionSync(() => {
-      this.exec('DELETE FROM doc_chunks');
-      for (let i = 0, off = 0; off < state.byteLength; i++, off += CHUNK) {
-        this.exec('INSERT INTO doc_chunks (i, data) VALUES (?, ?)', i, state.subarray(off, off + CHUNK));
-      }
-    });
+    // Saves are triggered by any traffic on the document (cursors, reconnects), not just edits.
+    // Writing the whole state and re-indexing the page each time costs rows written in both
+    // the room's storage and D1, so do only the parts whose input actually changed.
+    const sv = this.stateVector();
+    if (this.getKv('saved_sv') !== sv) {
+      const state = Y.encodeStateAsUpdate(this.document);
+      this.ctx.storage.transactionSync(() => {
+        this.exec('DELETE FROM doc_chunks');
+        for (let i = 0, off = 0; off < state.byteLength; i++, off += CHUNK) {
+          this.exec('INSERT INTO doc_chunks (i, data) VALUES (?, ?)', i, state.subarray(off, off + CHUNK));
+        }
+        this.exec('INSERT INTO kv (k, v) VALUES (?, ?) ON CONFLICT (k) DO UPDATE SET v = excluded.v', 'saved_sv', sv);
+      });
 
-    const title = this.title();
-    const body = fragmentText(this.document.getXmlFragment(FRAGMENT));
-    await this.env.DB.batch([
-      this.env.DB.prepare('UPDATE pages SET title = ?, icon = ?, updated_at = ? WHERE id = ?').bind(
-        title,
-        String(this.document.getMap('meta').get('icon') ?? '').slice(0, 16),
-        Date.now(),
-        this.name
-      ),
-      this.env.DB.prepare('DELETE FROM pages_fts WHERE page_id = ?').bind(this.name),
-      this.env.DB.prepare(
-        'INSERT INTO pages_fts (page_id, project_id, title, body) SELECT id, project_id, ?, ? FROM pages WHERE id = ?'
-      ).bind(title, body, this.name),
-    ]);
+      const title = this.title();
+      const icon = String(this.document.getMap('meta').get('icon') ?? '').slice(0, 16);
+      const body = fragmentText(this.document.getXmlFragment(FRAGMENT));
+      const sig = hashText(`${title}\u0000${icon}\u0000${body}`);
+      if (this.getKv('indexed_sig') !== sig) {
+        await this.env.DB.batch([
+          this.env.DB.prepare('UPDATE pages SET title = ?, icon = ?, updated_at = ? WHERE id = ?').bind(title, icon, Date.now(), this.name),
+          this.env.DB.prepare('DELETE FROM pages_fts WHERE page_id = ?').bind(this.name),
+          this.env.DB.prepare(
+            'INSERT INTO pages_fts (page_id, project_id, title, body) SELECT id, project_id, ?, ? FROM pages WHERE id = ?'
+          ).bind(title, body, this.name),
+        ]);
+        this.setKv('indexed_sig', sig);
+      }
+      // Which files the page uses, so a file can be shared by several pages and survive them.
+      const used = fileIdsIn(this.document.getXmlFragment(FRAGMENT).toString());
+      const refsSig = used.join(',');
+      if (this.getKv('refs_sig') !== refsSig) {
+        await syncFileRefs(this.env, this.name, used).then(() => this.setKv('refs_sig', refsSig), (err) => console.error('file refs failed', err));
+      }
+    }
 
     // Automatic history: at most every 10 minutes, and only if something changed.
     const last = Number(this.getKv('last_snapshot_at') ?? 0);
@@ -140,6 +155,7 @@ export class PageRoom extends YServer<Env> {
    * owner has no storage or no room; asked-for ones throw.
    */
   private async snapshot(kind: 'auto' | 'manual' | 'before-restore', by: string | null, userId: string | null) {
+    useStorageKey(this.env.STORAGE_KEY);
     const state = Y.encodeStateAsUpdate(this.document) as Uint8Array<ArrayBuffer>;
     const owner = await this.snapshotOwner(userId);
     const workspaceId = await workspaceOfPage(this.env, this.name);
@@ -149,7 +165,7 @@ export class PageRoom extends YServer<Env> {
       throw new HttpError(409, 'no storage set up for history: add one in Settings → Storage');
     }
     try {
-      await checkQuota(this.env, owner!, state.byteLength);
+      await checkQuota(this.env, storage, owner!, workspaceId, state.byteLength);
     } catch (err) {
       if (kind === 'auto') return null;
       throw err;
@@ -181,6 +197,7 @@ export class PageRoom extends YServer<Env> {
    */
   async onRequest(request: Request): Promise<Response> {
     const path = new URL(request.url).pathname;
+    useStorageKey(this.env.STORAGE_KEY);
     try {
       if (request.method === 'DELETE') {
         for (const conn of this.getConnections()) conn.close(4404, 'page deleted');
@@ -223,6 +240,20 @@ export class PageRoom extends YServer<Env> {
       throw err;
     }
   }
+}
+
+/** Small non-cryptographic hash (cyrb53), to tell whether text changed without storing it. */
+function hashText(text: string): string {
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return `${text.length}:${(4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36)}`;
 }
 
 /** Plain text of a BlockNote document, one line per block, for search. */

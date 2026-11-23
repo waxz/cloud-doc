@@ -1,4 +1,5 @@
 import type { Env } from './env.js';
+import { openPassword } from './secret.js';
 import { HttpError } from './http.js';
 
 /** A user's WebDAV folder (cloud-drive, Nextcloud, any WebDAV server). */
@@ -9,16 +10,18 @@ export interface StorageRow {
   url: string;
   username: string;
   password: string;
+  /** 1 for a storage the admin shares with chosen users. */
+  shared?: number;
 }
 
 /** Everything the app keeps in a storage lives under this folder. */
 const ROOT = 'cloud-doc';
 
-export const fileKey = (workspaceId: string, pageId: string, fileId: string, name: string) =>
-  `${ROOT}/${workspaceId}/${pageId}/files/${fileId}-${name}`;
+export const fileKey = (workspaceId: string, fileId: string, name: string) => `${ROOT}/${workspaceId}/files/${fileId}-${name}`;
 export const historyKey = (workspaceId: string, pageId: string, versionId: string) =>
   `${ROOT}/${workspaceId}/${pageId}/history/${versionId}.ydoc`;
-const pageFolder = (workspaceId: string, pageId: string) => `${ROOT}/${workspaceId}/${pageId}/`;
+const historyFolder = (workspaceId: string, pageId: string) => `${ROOT}/${workspaceId}/${pageId}/history/`;
+export const workspaceFolder = (workspaceId: string) => `${ROOT}/${workspaceId}/`;
 
 /** Folders known to exist, per storage, for this isolate. */
 const madeDirs = new Set<string>();
@@ -34,15 +37,15 @@ export class WebDav {
     return `${this.s.url.replace(/\/+$/, '')}/${path}`;
   }
 
-  private headers(extra: Record<string, string> = {}): Record<string, string> {
+  private async headers(extra: Record<string, string> = {}): Promise<Record<string, string>> {
     if (!this.s.username) return extra;
-    const pair = new TextEncoder().encode(`${this.s.username}:${this.s.password}`);
+    const pair = new TextEncoder().encode(`${this.s.username}:${await openPassword(this.s.password)}`);
     return { authorization: `Basic ${btoa(String.fromCharCode(...pair))}`, ...extra };
   }
 
   private async request(method: string, key: string, init: RequestInit & { headers?: Record<string, string> } = {}) {
     try {
-      return await fetch(this.url(key), { ...init, method, headers: this.headers(init.headers) });
+      return await fetch(this.url(key), { ...init, method, headers: await this.headers(init.headers) });
     } catch (err) {
       throw new HttpError(502, `storage "${this.s.url}" is unreachable: ${(err as Error).message}`);
     }
@@ -95,17 +98,22 @@ export class WebDav {
 
 export async function storageById(env: Env, id: string | null): Promise<StorageRow | null> {
   if (!id) return null;
-  return env.DB.prepare('SELECT id, user_id, name, url, username, password FROM storages WHERE id = ?').bind(id).first<StorageRow>();
+  return env.DB.prepare('SELECT id, user_id, name, url, username, password, shared FROM storages WHERE id = ?').bind(id).first<StorageRow>();
 }
 
-/** The storage a user writes to in a workspace: their override for it, else their default. */
+/** The storage a user writes to in a workspace: a bound personal override,
+ * then a workspace binding, then their personal override/default. */
 export async function resolveStorage(env: Env, userId: string, workspaceId: string): Promise<StorageRow | null> {
   return env.DB.prepare(
-    `SELECT id, user_id, name, url, username, password FROM storages WHERE id = COALESCE(
+    `SELECT id, user_id, name, url, username, password, shared FROM storages WHERE id = COALESCE(
+       (SELECT ws.storage_id FROM workspace_storage ws
+        JOIN workspace_storage_bindings b ON b.workspace_id = ws.workspace_id AND b.storage_id = ws.storage_id
+        WHERE ws.workspace_id = ? AND ws.user_id = ?),
+       (SELECT storage_id FROM workspace_storage_bindings WHERE workspace_id = ? ORDER BY created_at LIMIT 1),
        (SELECT storage_id FROM workspace_storage WHERE workspace_id = ? AND user_id = ?),
        (SELECT default_storage_id FROM users WHERE id = ?))`
   )
-    .bind(workspaceId, userId, userId)
+    .bind(workspaceId, userId, workspaceId, workspaceId, userId, userId)
     .first<StorageRow>();
 }
 
@@ -122,20 +130,54 @@ export async function usage(env: Env, userId: string): Promise<number> {
 
 const mb = (n: number) => `${Math.round(n / 1048576)} MB`;
 
-/** Throws when `adding` more bytes would pass the user's storage limit. */
-export async function checkQuota(env: Env, userId: string, adding: number): Promise<void> {
-  const row = await env.DB.prepare('SELECT storage_limit FROM users WHERE id = ?').bind(userId).first<{ storage_limit: number | null }>();
-  if (row?.storage_limit == null) return;
-  const used = await usage(env, userId);
-  if (used + adding > row.storage_limit) {
-    throw new HttpError(413, `storage limit reached: ${mb(used)} of ${mb(row.storage_limit)} used`);
+/** Bytes counted against a user's allocation of a shared storage: what workspaces funded by them keep there. */
+export async function sharedUsage(env: Env, storageId: string, granteeId: string): Promise<number> {
+  const row = await env.DB.prepare(
+    `SELECT
+       (SELECT COALESCE(SUM(f.size), 0) FROM files f
+          LEFT JOIN workspace_storage_bindings b ON b.workspace_id = f.workspace_id AND b.storage_id = f.storage_id
+        WHERE f.storage_id = ?1 AND COALESCE(b.granted_user_id, f.owner_id) = ?2)
+     + (SELECT COALESCE(SUM(v.size), 0) FROM page_versions v
+          JOIN pages p ON p.id = v.page_id JOIN projects pr ON pr.id = p.project_id
+          LEFT JOIN workspace_storage_bindings b ON b.workspace_id = pr.workspace_id AND b.storage_id = v.storage_id
+        WHERE v.storage_id = ?1 AND COALESCE(b.granted_user_id, v.owner_id) = ?2) AS used`
+  )
+    .bind(storageId, granteeId)
+    .first<{ used: number }>();
+  return row?.used ?? 0;
+}
+
+/**
+ * Whose allocation a write to `storage` in `workspaceId` counts against: for a shared storage, the user
+ * whose grant the workspace was bound with (else the writer); nobody for a person's own storage.
+ */
+export async function fundingUser(env: Env, storage: StorageRow, writerId: string, workspaceId: string): Promise<string | null> {
+  if (!storage.shared) return null;
+  const bound = await env.DB.prepare('SELECT granted_user_id FROM workspace_storage_bindings WHERE workspace_id = ? AND storage_id = ?')
+    .bind(workspaceId, storage.id)
+    .first<{ granted_user_id: string | null }>();
+  return bound?.granted_user_id ?? writerId;
+}
+
+/** Throws when `adding` more bytes would pass the allocation of a shared storage. Own storages have no limit. */
+export async function checkQuota(env: Env, storage: StorageRow, writerId: string, workspaceId: string, adding: number): Promise<void> {
+  const funder = await fundingUser(env, storage, writerId, workspaceId);
+  if (!funder) return;
+  const grant = await env.DB.prepare('SELECT limit_bytes FROM storage_grants WHERE storage_id = ? AND user_id = ?')
+    .bind(storage.id, funder)
+    .first<{ limit_bytes: number | null }>();
+  if (!grant) throw new HttpError(403, 'this shared storage is no longer allocated to the workspace owner');
+  if (grant.limit_bytes == null) return;
+  const used = await sharedUsage(env, storage.id, funder);
+  if (used + adding > grant.limit_bytes) {
+    throw new HttpError(413, `the shared storage allocation is full: ${mb(used)} of ${mb(grant.limit_bytes)} used`);
   }
 }
 
 /** The storage to write to, or a clear error telling the user to set one up. */
 export async function requireStorage(env: Env, userId: string, workspaceId: string): Promise<StorageRow> {
   const s = await resolveStorage(env, userId, workspaceId);
-  if (!s) throw new HttpError(409, 'no storage set up: add one in Settings → Storage');
+  if (!s) throw new HttpError(409, 'this workspace has no storage: a workspace owner can add one in Workspace settings');
   return s;
 }
 
@@ -148,18 +190,33 @@ export async function workspaceOfPage(env: Env, pageId: string): Promise<string>
 }
 
 /**
- * Removes a page's folder from every storage that holds its files or
- * history. Call before the page's rows are deleted. Storage errors are
- * logged, not thrown: the page is going away either way.
+ * Removes a page's history from every storage that holds it. Call before the page's rows are
+ * deleted. Files are not touched: they belong to the workspace. Storage errors are logged,
+ * not thrown: the page is going away either way.
  */
-export async function deletePageFolders(env: Env, workspaceId: string, pageId: string): Promise<void> {
+export async function deletePageHistory(env: Env, workspaceId: string, pageId: string): Promise<void> {
   const { results } = await env.DB.prepare(
     `SELECT DISTINCT s.id, s.user_id, s.name, s.url, s.username, s.password FROM storages s
-     WHERE s.id IN (SELECT storage_id FROM files WHERE page_id = ? UNION SELECT storage_id FROM page_versions WHERE page_id = ?)`
+     WHERE s.id IN (SELECT storage_id FROM page_versions WHERE page_id = ?)`
   )
-    .bind(pageId, pageId)
+    .bind(pageId)
     .all<StorageRow>();
   for (const s of results) {
-    await new WebDav(s).delete(pageFolder(workspaceId, pageId)).catch((err) => console.error('storage cleanup failed', err));
+    await new WebDav(s).delete(historyFolder(workspaceId, pageId)).catch((err) => console.error('storage cleanup failed', err));
+  }
+}
+
+/** Removes everything a workspace keeps from every storage it used (files and page history). */
+export async function deleteWorkspaceData(env: Env, workspaceId: string): Promise<void> {
+  const { results } = await env.DB.prepare(
+    `SELECT DISTINCT s.id, s.user_id, s.name, s.url, s.username, s.password FROM storages s
+     WHERE s.id IN (SELECT storage_id FROM files WHERE workspace_id = ?1
+                    UNION SELECT v.storage_id FROM page_versions v JOIN pages p ON p.id = v.page_id JOIN projects pr ON pr.id = p.project_id WHERE pr.workspace_id = ?1
+                    UNION SELECT storage_id FROM workspace_storage_bindings WHERE workspace_id = ?1)`
+  )
+    .bind(workspaceId)
+    .all<StorageRow>();
+  for (const s of results) {
+    await new WebDav(s).delete(workspaceFolder(workspaceId)).catch((err) => console.error('storage cleanup failed', err));
   }
 }

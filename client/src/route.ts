@@ -2,13 +2,13 @@ import { useEffect, useState } from 'react';
 
 export type Route =
   | { name: 'home' }
-  | { name: 'workspace'; wid: string; pageId?: string }
+  | { name: 'workspace'; wid: string; pageId?: string; commentId?: string }
   | { name: 'share'; token: string; pageId?: string }
   | { name: 'register'; token: string };
 
 export function parse(path: string): Route {
   let m = /^\/w\/([\w-]+)(?:\/p\/([\w-]+))?\/?$/.exec(path);
-  if (m) return { name: 'workspace', wid: m[1]!, pageId: m[2] };
+  if (m) return { name: 'workspace', wid: m[1]!, pageId: m[2], commentId: new URLSearchParams(window.location.search).get('comment') ?? undefined };
   m = /^\/s\/([\w-]+)(?:\/([\w-]+))?\/?$/.exec(path);
   if (m) return { name: 'share', token: m[1]!, pageId: m[2] };
   m = /^\/register\/([\w-]+)\/?$/.exec(path);
@@ -17,13 +17,14 @@ export function parse(path: string): Route {
 }
 
 export const href = {
-  workspace: (wid: string, pageId?: string) => (pageId ? `/w/${wid}/p/${pageId}` : `/w/${wid}`),
+  workspace: (wid: string, pageId?: string, commentId?: string) =>
+    pageId ? `/w/${wid}/p/${pageId}${commentId ? `?comment=${encodeURIComponent(commentId)}` : ''}` : `/w/${wid}`,
   share: (token: string, pageId?: string) => (pageId ? `/s/${token}/${pageId}` : `/s/${token}`),
   register: (token: string) => `/register/${token}`,
 };
 
 export function navigate(to: string): void {
-  if (to === window.location.pathname) return;
+  if (to === window.location.pathname + window.location.search) return;
   window.history.pushState(null, '', to);
   window.dispatchEvent(new PopStateEvent('popstate'));
 }

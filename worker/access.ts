@@ -105,8 +105,10 @@ export async function pageAccess(
     .bind(pageId)
     .first<PageAccess['page']>();
   if (!page) return null;
-  const fromProject = await projectRole(env, user, page.project_id);
-  const fromShare = await shareRole(env, getCookie(req, SHARE_COOKIE), pageId, user);
+  const [fromProject, fromShare] = await Promise.all([
+    projectRole(env, user, page.project_id),
+    shareRole(env, getCookie(req, SHARE_COOKIE), pageId, user),
+  ]);
   const role = higher(fromProject, fromShare);
   if (!role) return null;
   return { role, page, viaShare: !atLeast(fromProject, role) };
@@ -124,3 +126,24 @@ export async function requirePage(
   if (!atLeast(access.role, needed)) throw new HttpError(403, `requires ${needed} access`);
   return access;
 }
+
+/** The projects of a workspace the user can see, with their role in each (one query). */
+export async function visibleProjects(env: Env, user: User, wid: string) {
+  const wsRole = await requireWorkspace(env, user, wid);
+  const { results } = await env.DB.prepare(
+    `SELECT p.id, p.name, p.default_role, pm.role AS member_role
+     FROM projects p LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?
+     WHERE p.workspace_id = ? ORDER BY p.created_at`
+  )
+    .bind(user.id, wid)
+    .all<{ id: string; name: string; default_role: Role | null; member_role: Role | null }>();
+  const rank = (r: Role | null) => (r ? ['viewer', 'commenter', 'editor', 'admin'].indexOf(r) : -1);
+  return results
+    .map((p) => {
+      const role: Role | null =
+        wsRole === 'member' ? (rank(p.member_role) >= rank(p.default_role) ? p.member_role : p.default_role) : 'admin';
+      return { id: p.id, name: p.name, defaultRole: p.default_role, role };
+    })
+    .filter((p) => p.role !== null);
+}
+

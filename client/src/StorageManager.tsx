@@ -5,7 +5,7 @@ import { api, type Storage, type StorageInput } from './api';
 import { errorText } from './util';
 
 interface Props {
-  /** `me`, or a user id when an admin manages someone else's storage. */
+  /** Always `me`: people set up their own storages. */
   uid: string;
   storages: Storage[];
   defaultId: string | null;
@@ -108,14 +108,17 @@ export function StorageManager({ uid, storages, defaultId, onChanged, onError }:
   );
 }
 
-function StorageForm({
+export function StorageForm({
   uid,
   storage,
+  shared = false,
   onCancel,
   onSaved,
   onError,
 }: {
   uid: string;
+  /** An admin's shared storage rather than one of the user's own. */
+  shared?: boolean;
   storage: Storage | null;
   onCancel?: () => void;
   onSaved: () => void;
@@ -141,8 +144,8 @@ function StorageForm({
           e.preventDefault();
           setBusy(true);
           try {
-            if (storage) await api.updateStorage(storage.id, form);
-            else await api.createStorage(uid, form);
+            if (storage) await (shared ? api.adminUpdateSharedStorage(storage.id, form) : api.updateStorage(storage.id, form));
+            else await (shared ? api.adminCreateSharedStorage(form) : api.createStorage(uid, form));
             onSaved();
           } catch (err) {
             onError(errorText(err));
@@ -183,7 +186,7 @@ function StorageForm({
               leftSection={<IconPlugConnected size={15} />}
               onClick={async () => {
                 try {
-                  setTest(await api.testStorage(storage?.id ?? null, form));
+                  setTest(await (shared ? api.adminTestSharedStorage(storage?.id ?? null, form) : api.testStorage(storage?.id ?? null, form)));
                 } catch (err) {
                   setTest({ ok: false, message: errorText(err) });
                 }

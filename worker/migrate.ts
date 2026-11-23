@@ -1,5 +1,19 @@
 import schema from '../migrations/0001_schema.sql';
 import adminStorage from '../migrations/0002_admin_storage.sql';
+import workspaceStorageBindings from '../migrations/0003_workspace_storage_bindings.sql';
+import notifications from '../migrations/0004_notifications.sql';
+import messagesTodos from '../migrations/0005_messages_todos.sql';
+import todoReferences from '../migrations/0006_todo_references.sql';
+import commentVisibility from '../migrations/0007_comment_visibility.sql';
+import pdfAnnotations from '../migrations/0008_pdf_annotations.sql';
+import commentHighlightColor from '../migrations/0009_comment_highlight_color.sql';
+import commentHighlightShape from '../migrations/0010_comment_highlight_shape.sql';
+import commentQuoteIndex from '../migrations/0011_comment_quote_index.sql';
+import usage from '../migrations/0012_usage.sql';
+import indexes from '../migrations/0013_indexes.sql';
+import workspaceFiles from '../migrations/0014_workspace_files_shared_storage.sql';
+import linkWorkspaceStorage from '../migrations/0015_link_workspace_storage.sql';
+import commentParent from '../migrations/0016_comment_parent.sql';
 
 /**
  * Migrations bundled into the Worker, applied on first use so a plain
@@ -10,6 +24,20 @@ import adminStorage from '../migrations/0002_admin_storage.sql';
 const MIGRATIONS: [name: string, sql: string][] = [
   ['0001_schema.sql', schema],
   ['0002_admin_storage.sql', adminStorage],
+  ['0003_workspace_storage_bindings.sql', workspaceStorageBindings],
+  ['0004_notifications.sql', notifications],
+  ['0005_messages_todos.sql', messagesTodos],
+  ['0006_todo_references.sql', todoReferences],
+  ['0007_comment_visibility.sql', commentVisibility],
+  ['0008_pdf_annotations.sql', pdfAnnotations],
+  ['0009_comment_highlight_color.sql', commentHighlightColor],
+  ['0010_comment_highlight_shape.sql', commentHighlightShape],
+  ['0011_comment_quote_index.sql', commentQuoteIndex],
+  ['0012_usage.sql', usage],
+  ['0013_indexes.sql', indexes],
+  ['0014_workspace_files_shared_storage.sql', workspaceFiles],
+  ['0015_link_workspace_storage.sql', linkWorkspaceStorage],
+  ['0016_comment_parent.sql', commentParent],
 ];
 
 /** Splits a migration into statements (no semicolons inside strings in these files). */

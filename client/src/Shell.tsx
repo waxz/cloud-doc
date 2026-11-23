@@ -20,6 +20,9 @@ import {
   IconChevronDown,
   IconLogout,
   IconMoon,
+  IconLayoutSidebarLeftCollapse,
+  IconLayoutSidebarLeftExpand,
+  IconPaperclip,
   IconPlus,
   IconSearch,
   IconSelector,
@@ -30,37 +33,88 @@ import {
   IconUsersGroup,
   IconX,
 } from '@tabler/icons-react';
+import { DeletePageDialog } from './DeletePageDialog';
+import { WorkspaceFiles } from './WorkspaceFiles';
+import { WorkspaceForm } from './WorkspaceForm';
+import { AdminPanel, Loading, OnceOpened, PageView, ProjectSettings, UserSettings, WorkspaceSettings } from './lazy';
+import { getFavorites, requestFind } from './util';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AdminPanel } from './AdminPanel';
-import { api, atLeast, type Me, type Page, type Project, type SearchHit, type Workspace } from './api';
+import { api, atLeast, type DeletePreview, type Me, type Page, type Project, type SearchHit, type Workspace } from './api';
 import { PageTree } from './PageTree';
-import { PageView } from './PageView';
 import { href, navigate } from './route';
-import { ProjectSettings, WorkspaceSettings } from './Settings';
-import { UserSettings } from './UserSettings';
-import { colorFor, errorText } from './util';
+import { colorFor, errorText, pollWhenVisible } from './util';
 
 interface Props {
   me: Me;
   workspace: Workspace;
   pageId?: string;
+  commentId?: string;
   dark: boolean;
   onMeChanged: () => void;
   onSignOut: () => void;
   onError: (message: string) => void;
 }
 
-export function Shell({ me, workspace, pageId, dark, onMeChanged, onSignOut, onError }: Props) {
+export function Shell({ me, workspace, pageId, commentId, dark, onMeChanged, onSignOut, onError }: Props) {
   const [navOpen, nav] = useDisclosure(false);
+  // On a computer the sidebar can be hidden to give the page the whole window (remembered per browser).
+  const [navHidden, setNavHidden] = useState(() => {
+    try { return localStorage.getItem('cloud-doc-nav-hidden') === '1'; } catch { return false; }
+  });
+  // lets the stylesheet give the page more room while the explorer is away
+  useEffect(() => {
+    document.body.classList.toggle('nav-hidden', navHidden);
+    return () => document.body.classList.remove('nav-hidden');
+  }, [navHidden]);
+  const hideNav = useCallback((hidden: boolean) => {
+    setNavHidden(hidden);
+    try { localStorage.setItem('cloud-doc-nav-hidden', hidden ? '1' : '0'); } catch { /* not remembered */ }
+  }, []);
+  useEffect(() => {
+    // Ctrl/Cmd+\ hides or shows the sidebar
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key === '\\') {
+        event.preventDefault();
+        hideNav(!navHidden);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [navHidden, hideNav]);
   const phone = useMediaQuery('(max-width: 48em)');
   const { toggleColorScheme } = useMantineColorScheme();
   const [projects, setProjects] = useState<Project[]>([]);
   const [pages, setPages] = useState<Record<string, Page[]>>({});
   const [query, setQuery] = useState('');
+  const searchInput = useRef<HTMLInputElement>(null);
+  const [favorites, setFavorites] = useState(getFavorites);
+  useEffect(() => {
+    const sync = () => setFavorites(getFavorites());
+    window.addEventListener('cloud-doc-favorites', sync);
+    // Ctrl/Cmd+K jumps to search from anywhere.
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        searchInput.current?.focus();
+        searchInput.current?.select();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('cloud-doc-favorites', sync);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, []);
   const [hits, setHits] = useState<SearchHit[] | null>(null);
   const [wsSettings, setWsSettings] = useState(false);
   const [projectDialog, setProjectDialog] = useState<{ project: Project | null } | null>(null);
   const [newWorkspace, setNewWorkspace] = useState(false);
+  const [filesOpen, setFilesOpen] = useState(false);
+  useEffect(() => {
+    const open = () => setFilesOpen(true);
+    window.addEventListener('cloud-doc-open-workspace-files', open);
+    return () => window.removeEventListener('cloud-doc-open-workspace-files', open);
+  }, []);
   const [userSettings, setUserSettings] = useState<'profile' | 'storage' | null>(null);
   const [admin, setAdmin] = useState(false);
   /** Files picked from the tree's "Upload file…", handed to the page once it's open. */
@@ -69,12 +123,17 @@ export function Shell({ me, workspace, pageId, dark, onMeChanged, onSignOut, onE
   const uploadTarget = useRef<string | null>(null);
   const wid = workspace.id;
 
+  // The whole tree comes in one request; state is only replaced when something changed, so a
+  // poll that finds nothing new doesn't re-render the sidebar.
+  const lastTree = useRef('');
   const refresh = useCallback(async () => {
     try {
-      const list = await api.projects(wid);
-      setProjects(list);
-      const entries = await Promise.all(list.map(async (p) => [p.id, await api.pages(p.id)] as const));
-      setPages(Object.fromEntries(entries));
+      const tree = await api.tree(wid);
+      const text = JSON.stringify(tree);
+      if (text === lastTree.current) return;
+      lastTree.current = text;
+      setProjects(tree.projects);
+      setPages(tree.pages);
     } catch (e) {
       onError(errorText(e));
     }
@@ -82,14 +141,12 @@ export function Shell({ me, workspace, pageId, dark, onMeChanged, onSignOut, onE
 
   useEffect(() => {
     refresh();
-    // Other people's new pages and renames show up without a reload.
-    const timer = setInterval(refresh, 20_000);
-    window.addEventListener('focus', refresh);
-    return () => {
-      clearInterval(timer);
-      window.removeEventListener('focus', refresh);
-    };
+    // Other people's new pages and renames show up without a reload. Every refresh costs
+    // one request per project, so poll slowly, only while the tab is visible, and never
+    // twice within 30 s however often the window is focused.
+    return pollWhenVisible(refresh, 90_000, 30_000);
   }, [refresh]);
+
 
   useEffect(() => {
     if (!query.trim()) return setHits(null);
@@ -97,9 +154,10 @@ export function Shell({ me, workspace, pageId, dark, onMeChanged, onSignOut, onE
     return () => clearTimeout(t);
   }, [query, wid, onError]);
 
-  const open = (id: string | null) => {
+  /** Opens a page. A search stays up (it only ends with its exit button), so several results can be visited in turn. */
+  const open = (id: string | null, keepSearch = false) => {
     navigate(href.workspace(wid, id ?? undefined));
-    setQuery('');
+    if (!keepSearch) setQuery('');
     nav.close();
   };
 
@@ -113,16 +171,30 @@ export function Shell({ me, workspace, pageId, dark, onMeChanged, onSignOut, onE
     }
   };
 
+  // Deleting asks first, and says what happens to the page's files (they belong to the workspace).
+  const [deleting, setDeleting] = useState<{ page: Page; preview: DeletePreview | null } | null>(null);
   const deletePage = async (page: Page) => {
-    if (!confirm(`Delete "${page.title || 'Untitled'}" with its subpages, files and history?`)) return;
+    setDeleting({ page, preview: null });
     try {
-      await api.deletePage(page.id);
+      setDeleting({ page, preview: await api.deletePreview(page.id) });
+    } catch (e) {
+      setDeleting(null);
+      onError(errorText(e));
+    }
+  };
+  const confirmDelete = async (deleteFiles: boolean) => {
+    if (!deleting) return;
+    const { page } = deleting;
+    try {
+      const outcome = await api.deletePage(page.id, deleteFiles ? 'delete' : 'keep');
+      setDeleting(null);
       const list = pages[page.project_id] ?? [];
       const gone = new Set<string>();
       const collect = (id: string) => (gone.add(id), list.filter((p) => p.parent_id === id).forEach((c) => collect(c.id)));
       collect(page.id);
       setPages((m) => ({ ...m, [page.project_id]: list.filter((p) => !gone.has(p.id)) }));
       if (pageId && gone.has(pageId)) open(null);
+      if (deleteFiles && outcome.filesKept > 0) onError(`Deleted. ${outcome.filesKept} file${outcome.filesKept === 1 ? ' was' : 's were'} kept because other pages use ${outcome.filesKept === 1 ? 'it' : 'them'} or you may not delete ${outcome.filesKept === 1 ? 'it' : 'them'}.`);
     } catch (e) {
       onError(errorText(e));
     }
@@ -155,12 +227,21 @@ export function Shell({ me, workspace, pageId, dark, onMeChanged, onSignOut, onE
   const onTitle = useCallback((id: string, title: string) => patchPage(id, { title }), [patchPage]);
   const onIcon = useCallback((id: string, icon: string) => patchPage(id, { icon }), [patchPage]);
 
+  const favoritePages = useMemo(() => {
+    const all = Object.values(pages).flat();
+    return favorites.map((id) => all.find((p) => p.id === id)).filter((p): p is Page => !!p);
+  }, [favorites, pages]);
   const projectName = useMemo(() => Object.fromEntries(projects.map((p) => [p.id, p.name])), [projects]);
   const linkFor = useCallback((id: string) => href.workspace(wid, id), [wid]);
-  const burger = phone ? <Burger opened={navOpen} onClick={nav.toggle} size="sm" aria-label="Pages" /> : null;
+  const showSidebar = (
+    <Tooltip label="Show sidebar (Ctrl+\)">
+      <ActionIcon variant="subtle" color="gray" size="lg" aria-label="Show sidebar" onClick={() => hideNav(false)}><IconLayoutSidebarLeftExpand size={18} /></ActionIcon>
+    </Tooltip>
+  );
+  const burger = phone ? <Burger opened={navOpen} onClick={nav.toggle} size="sm" aria-label="Pages" /> : navHidden ? showSidebar : null;
 
   return (
-    <AppShell navbar={{ width: 288, breakpoint: 'sm', collapsed: { mobile: !navOpen } }} padding={0}>
+    <AppShell navbar={{ width: 288, breakpoint: 'sm', collapsed: { mobile: !navOpen, desktop: navHidden } }} padding={0}>
       <AppShell.Navbar className="navbar">
         <AppShell.Section p="xs" pb={4}>
           <Group gap={4} wrap="nowrap">
@@ -168,10 +249,10 @@ export function Shell({ me, workspace, pageId, dark, onMeChanged, onSignOut, onE
               <Menu.Target>
                 <UnstyledButton className="ws-switch" style={{ flex: 1, minWidth: 0 }}>
                   <Avatar size={26} radius="sm" color={colorFor(wid)} variant="filled">
-                    {workspace.name.slice(0, 1).toUpperCase()}
+                    {(workspace.displayName ?? workspace.name).slice(0, 1).toUpperCase()}
                   </Avatar>
                   <Text fw={600} size="sm" truncate="end" style={{ flex: 1 }}>
-                    {workspace.name}
+                    {workspace.displayName ?? workspace.name}
                   </Text>
                   <IconSelector size={14} />
                 </UnstyledButton>
@@ -180,7 +261,7 @@ export function Shell({ me, workspace, pageId, dark, onMeChanged, onSignOut, onE
                 <Menu.Label>Workspaces</Menu.Label>
                 {me.workspaces.map((w) => (
                   <Menu.Item key={w.id} onClick={() => navigate(href.workspace(w.id))} fw={w.id === wid ? 600 : 400}>
-                    {w.name}
+                    {w.displayName ?? w.name}
                   </Menu.Item>
                 ))}
                 {(me.canCreateWorkspaces || me.user.role === 'admin') && (
@@ -199,16 +280,26 @@ export function Shell({ me, workspace, pageId, dark, onMeChanged, onSignOut, onE
                 <IconX size={18} />
               </ActionIcon>
             )}
+          {!phone && (
+              <Tooltip label="Hide sidebar (Ctrl+\)">
+                <ActionIcon variant="subtle" color="gray" aria-label="Hide sidebar" onClick={() => hideNav(true)}><IconLayoutSidebarLeftCollapse size={18} /></ActionIcon>
+              </Tooltip>
+            )}
           </Group>
           <TextInput
             mt={8}
             size="sm"
-            placeholder="Search pages"
+            placeholder="Search pages  (Ctrl K)"
+            ref={searchInput}
             leftSection={<IconSearch size={15} />}
             value={query}
             onChange={(e) => setQuery(e.currentTarget.value)}
-            rightSection={query && <IconX size={14} style={{ cursor: 'pointer' }} onClick={() => setQuery('')} />}
+            onKeyDown={(e) => { if (e.key === 'Escape') setQuery(''); }}
+            rightSection={query && <ActionIcon size="sm" variant="subtle" color="gray" aria-label="Exit search" onClick={() => setQuery('')}><IconX size={14} /></ActionIcon>}
           />
+          <Button variant="subtle" color="gray" size="compact-sm" fullWidth justify="flex-start" mt={4} leftSection={<IconPaperclip size={15} />} onClick={() => setFilesOpen(true)}>
+            Workspace files
+          </Button>
         </AppShell.Section>
         <AppShell.Section grow component={ScrollArea} px="xs" type="auto">
           {hits ? (
@@ -219,16 +310,40 @@ export function Shell({ me, workspace, pageId, dark, onMeChanged, onSignOut, onE
                 </Text>
               )}
               {hits.map((h) => (
-                <div key={h.id} className="hit" onClick={() => open(h.id)}>
-                  <div className="hit-title">{h.title || 'Untitled'}</div>
-                  <div className="hit-project">{projectName[h.project_id]}</div>
-                  {/* snippet() output: page text with <mark> tags added by FTS5 */}
-                  <div className="hit-snippet" dangerouslySetInnerHTML={{ __html: escapeSnippet(h.snippet) }} />
+                <div key={h.id} className={`hit${h.id === pageId ? ' is-active' : ''}`}>
+                  <div className="hit-title" onClick={() => open(h.id, true)}>{h.title || 'Untitled'} <span className="hit-project">· {projectName[h.project_id]}</span></div>
+                  {h.matches.length > 0 ? h.matches.map((m) => (
+                    <div
+                      key={m.n}
+                      className="hit-match"
+                      title="Jump to this match"
+                      onClick={() => {
+                        requestFind({ pageId: h.id, words: query.split(/\s+/).filter(Boolean), n: m.n, before: m.before, text: m.text });
+                        open(h.id, true);
+                      }}
+                    >
+                      <span className="hit-before">…{m.before}</span><mark>{m.text}</mark><span className="hit-after">{m.after}…</span>
+                    </div>
+                  )) : (
+                    // Title-only match: the page text has nothing to show.
+                    <div className="hit-snippet" dangerouslySetInnerHTML={{ __html: escapeSnippet(h.snippet) }} />
+                  )}
                 </div>
               ))}
             </Stack>
           ) : (
-            projects.map((project) => (
+            <>
+            {favoritePages.length > 0 && (
+              <div className="project">
+                <Text size="xs" fw={600} c="dimmed" tt="uppercase" className="project-head">Favorites</Text>
+                {favoritePages.map((p) => (
+                  <div key={p.id} className={`hit${p.id === pageId ? ' is-active' : ''}`} onClick={() => open(p.id)}>
+                    <div className="hit-title">{p.icon ? `${p.icon} ` : ''}{p.title || 'Untitled'}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {projects.map((project) => (
               <div key={project.id} className="project">
                 <Group justify="space-between" className="project-head" wrap="nowrap" gap={0}>
                   <Text size="xs" fw={600} c="dimmed" tt="uppercase" truncate="end">
@@ -267,7 +382,8 @@ export function Shell({ me, workspace, pageId, dark, onMeChanged, onSignOut, onE
                   }}
                 />
               </div>
-            ))
+            ))}
+            </>
           )}
           <Button variant="subtle" color="gray" size="compact-sm" leftSection={<IconPlus size={14} />} onClick={() => setProjectDialog({ project: null })} my="xs">
             New project
@@ -315,10 +431,13 @@ export function Shell({ me, workspace, pageId, dark, onMeChanged, onSignOut, onE
         </AppShell.Section>
       </AppShell.Navbar>
       <AppShell.Main className="main">
+        {!pageId && !phone && navHidden && <div style={{ position: 'fixed', top: 8, left: 8, zIndex: 30 }}>{showSidebar}</div>}
         {pageId ? (
+          <Loading>
           <PageView
             key={pageId}
             pageId={pageId}
+            initialCommentId={commentId}
             me={me.user}
             dark={dark}
             leading={burger}
@@ -330,6 +449,7 @@ export function Shell({ me, workspace, pageId, dark, onMeChanged, onSignOut, onE
             onPendingTaken={() => setPendingUpload(null)}
             onNeedStorage={() => setUserSettings('storage')}
           />
+          </Loading>
         ) : (
           <div className="empty">
             {burger && <div className="empty-burger">{burger}</div>}
@@ -358,6 +478,7 @@ export function Shell({ me, workspace, pageId, dark, onMeChanged, onSignOut, onE
           open(target);
         }}
       />
+      <OnceOpened open={wsSettings}>
       <WorkspaceSettings
         workspace={workspace}
         me={me.user}
@@ -366,6 +487,8 @@ export function Shell({ me, workspace, pageId, dark, onMeChanged, onSignOut, onE
         onChanged={onMeChanged}
         onError={onError}
       />
+      </OnceOpened>
+      <OnceOpened open={!!projectDialog}>
       <ProjectSettings
         project={projectDialog?.project ?? null}
         workspaceId={wid}
@@ -374,6 +497,7 @@ export function Shell({ me, workspace, pageId, dark, onMeChanged, onSignOut, onE
         onChanged={() => refresh()}
         onError={onError}
       />
+      </OnceOpened>
       <NewWorkspace
         opened={newWorkspace}
         onClose={() => setNewWorkspace(false)}
@@ -383,8 +507,10 @@ export function Shell({ me, workspace, pageId, dark, onMeChanged, onSignOut, onE
         }}
         onError={onError}
       />
-      <UserSettings opened={!!userSettings} tab={userSettings ?? 'profile'} onClose={() => setUserSettings(null)} onChanged={onMeChanged} onError={onError} />
-      {me.user.role === 'admin' && <AdminPanel me={me.user} opened={admin} onClose={() => setAdmin(false)} onError={onError} />}
+      <OnceOpened open={!!userSettings}><UserSettings opened={!!userSettings} tab={userSettings ?? 'profile'} onClose={() => setUserSettings(null)} onChanged={onMeChanged} onError={onError} /></OnceOpened>
+      {me.user.role === 'admin' && <OnceOpened open={admin}><AdminPanel me={me.user} opened={admin} onClose={() => setAdmin(false)} onError={onError} /></OnceOpened>}
+      <WorkspaceFiles workspaceId={wid} opened={filesOpen} onClose={() => setFilesOpen(false)} me={me.user} pageId={pageId ?? null} canInsert={!!pageId} onOpenPage={(id) => open(id)} onError={onError} />
+      <DeletePageDialog page={deleting?.page ?? null} preview={deleting?.preview ?? null} onCancel={() => setDeleting(null)} onConfirm={confirmDelete} />
     </AppShell>
   );
 }
@@ -400,28 +526,9 @@ export function NewWorkspace({
   onCreated: (w: Workspace) => void;
   onError: (message: string) => void;
 }) {
-  const [name, setName] = useState('');
   return (
     <Modal opened={opened} onClose={onClose} title="New workspace">
-      <form
-        onSubmit={async (e) => {
-          e.preventDefault();
-          try {
-            onCreated(await api.createWorkspace(name.trim()));
-            setName('');
-            onClose();
-          } catch (err) {
-            onError(errorText(err));
-          }
-        }}
-      >
-        <Stack>
-          <TextInput label="Name" value={name} onChange={(e) => setName(e.currentTarget.value)} data-autofocus />
-          <Button type="submit" disabled={!name.trim()}>
-            Create
-          </Button>
-        </Stack>
-      </form>
+      {opened && <WorkspaceForm onCreated={(w) => { onCreated(w); onClose(); }} onError={onError} />}
     </Modal>
   );
 }

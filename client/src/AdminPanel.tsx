@@ -11,6 +11,7 @@ import {
   NumberInput,
   PasswordInput,
   SegmentedControl,
+  Select,
   Stack,
   Switch,
   Tabs,
@@ -20,11 +21,12 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { useMediaQuery } from '@mantine/hooks';
-import { IconCheck, IconCopy, IconLink, IconPlus, IconTrash, IconUserPlus, IconUsers } from '@tabler/icons-react';
+import { IconChartBar, IconDatabase, IconCheck, IconCopy, IconLink, IconPlus, IconTrash, IconUserPlus, IconUsers } from '@tabler/icons-react';
 import { useCallback, useEffect, useState } from 'react';
 import { type AdminUser, api, type RegistrationLink, type Storage, type User } from './api';
 import { href } from './route';
-import { StorageManager } from './StorageManager';
+import { SharedStorages } from './SharedStorages';
+import { UsagePanel } from './UsagePanel';
 import { errorText, formatBytes, timeAgo } from './util';
 
 interface Props {
@@ -57,6 +59,12 @@ export function AdminPanel({ me, opened, onClose, onError }: Props) {
         <Tabs.List mb="md">
           <Tabs.Tab value="users" leftSection={<IconUsers size={16} />}>
             Users
+          </Tabs.Tab>
+          <Tabs.Tab value="storage" leftSection={<IconDatabase size={16} />}>
+            Storage
+          </Tabs.Tab>
+          <Tabs.Tab value="usage" leftSection={<IconChartBar size={16} />}>
+            Usage
           </Tabs.Tab>
           <Tabs.Tab value="links" leftSection={<IconLink size={16} />}>
             Registration links
@@ -100,12 +108,9 @@ export function AdminPanel({ me, opened, onClose, onError }: Props) {
                       </Text>
                     </div>
                     <div style={{ textAlign: 'right', flex: 'none' }}>
-                      <Text size="xs">
-                        {formatBytes(u.usage)}
-                        {u.storage_limit != null && ` / ${formatBytes(u.storage_limit)}`}
-                      </Text>
-                      <Text size="xs" c={u.default_storage_name ? 'dimmed' : 'orange'}>
-                        {u.default_storage_name ?? 'No storage'}
+                      <Text size="xs">{formatBytes(u.usage)}</Text>
+                      <Text size="xs" c={u.own_storages + u.shared_storages ? 'dimmed' : 'orange'}>
+                        {u.own_storages + u.shared_storages ? `${u.own_storages} own · ${u.shared_storages} shared` : 'No storage'}
                       </Text>
                     </div>
                   </Group>
@@ -113,6 +118,12 @@ export function AdminPanel({ me, opened, onClose, onError }: Props) {
               ))}
             </Stack>
           )}
+        </Tabs.Panel>
+        <Tabs.Panel value="storage">
+          <SharedStorages onError={onError} />
+        </Tabs.Panel>
+        <Tabs.Panel value="usage">
+          <UsagePanel onError={onError} />
         </Tabs.Panel>
         <Tabs.Panel value="links">
           <Links links={links} onChanged={load} onError={onError} />
@@ -140,20 +151,8 @@ function UserEditor({
   const [password, setPassword] = useState('');
   const [role, setRole] = useState<'admin' | 'member'>(user?.role ?? 'member');
   const [canCreate, setCanCreate] = useState(user ? !!user.can_create_workspaces : true);
-  const [limitMb, setLimitMb] = useState<number | string>(user?.storage_limit != null ? Math.round(user.storage_limit / MB) : '');
   const [disabled, setDisabled] = useState(!!user?.disabled);
-  const [storages, setStorages] = useState<Storage[] | null>(null);
-  const [defaultId, setDefaultId] = useState(user?.default_storage_id ?? null);
   const [busy, setBusy] = useState(false);
-
-  const loadStorages = useCallback(() => {
-    if (!user) return;
-    api.storages(user.id).then(setStorages, (e) => onError(errorText(e)));
-    api.adminUsers().then((all) => setDefaultId(all.find((u) => u.id === user.id)?.default_storage_id ?? null));
-  }, [user, onError]);
-  useEffect(loadStorages, [loadStorages]);
-
-  const storageLimit = limitMb === '' ? null : Math.round(Number(limitMb) * MB);
 
   const save = async () => {
     setBusy(true);
@@ -163,12 +162,11 @@ function UserEditor({
           name: name.trim(),
           role,
           canCreateWorkspaces: canCreate,
-          storageLimit,
           disabled,
           ...(password ? { password } : {}),
         });
       } else {
-        await api.adminCreateUser({ email: email.trim(), name: name.trim(), password, role, canCreateWorkspaces: canCreate, storageLimit });
+        await api.adminCreateUser({ email: email.trim(), name: name.trim(), password, role, canCreateWorkspaces: canCreate });
       }
       onDone();
     } catch (e) {
@@ -204,14 +202,6 @@ function UserEditor({
         />
       </div>
       <Switch label="Can create workspaces" checked={canCreate || role === 'admin'} disabled={role === 'admin'} onChange={(e) => setCanCreate(e.currentTarget.checked)} />
-      <NumberInput
-        label="Storage limit (MB)"
-        description="Files and page history in their storages. Empty = no limit."
-        value={limitMb}
-        onChange={setLimitMb}
-        min={0}
-        allowDecimal={false}
-      />
       {user && user.id !== me.id && (
         <Switch label="Disabled (can't sign in)" color="red" checked={disabled} onChange={(e) => setDisabled(e.currentTarget.checked)} />
       )}
@@ -246,17 +236,9 @@ function UserEditor({
         </Group>
       </Group>
       {user && (
-        <>
-          <Divider label="WebDAV storage" labelPosition="left" />
-          <Text size="sm" c="dimmed">
-            Where {user.name}'s uploads and page history go. They can also manage this themselves in Settings.
-          </Text>
-          {storages ? (
-            <StorageManager uid={user.id} storages={storages} defaultId={defaultId} onChanged={loadStorages} onError={onError} />
-          ) : (
-            <Loader size="sm" />
-          )}
-        </>
+        <Text size="xs" c="dimmed">
+          Storages are set up by their owners. To give {user.name} room to create workspaces without a storage of their own, share one of yours under Storage.
+        </Text>
       )}
     </Stack>
   );
@@ -266,6 +248,15 @@ function Links({ links, onChanged, onError }: { links: RegistrationLink[] | null
   const [email, setEmail] = useState('');
   const [role, setRole] = useState<'admin' | 'member'>('member');
   const [days, setDays] = useState<number | string>(7);
+  const [workspaces, setWorkspaces] = useState<{ id: string; name: string }[]>([]);
+  const [storages, setStorages] = useState<{ id: string; name: string }[]>([]);
+  const [workspaceId, setWorkspaceId] = useState<string | null>(null);
+  const [storageId, setStorageId] = useState<string | null>(null);
+  const [limit, setLimit] = useState<number | string>('');
+  useEffect(() => {
+    api.adminWorkspaces().then(setWorkspaces, (e) => onError(errorText(e)));
+    api.adminSharedStorages().then(setStorages, (e) => onError(errorText(e)));
+  }, [onError]);
   const url = (token: string) => new URL(href.register(token), window.location.origin).href;
   const run = async (fn: () => Promise<unknown>) => {
     try {
@@ -303,10 +294,49 @@ function Links({ links, onChanged, onError }: { links: RegistrationLink[] | null
             </div>
             <NumberInput label="Expires after (days)" value={days} onChange={setDays} min={0} max={365} />
           </Group>
+          <Group grow align="flex-start">
+            <Select
+              label="Add to workspace (optional)"
+              placeholder="None"
+              clearable
+              searchable
+              data={workspaces.map((w) => ({ value: w.id, label: w.name }))}
+              value={workspaceId}
+              onChange={setWorkspaceId}
+              nothingFoundMessage="No workspaces yet"
+            />
+            <Select
+              label="Share a storage (optional)"
+              placeholder="None"
+              clearable
+              data={storages.map((s) => ({ value: s.id, label: s.name }))}
+              value={storageId}
+              onChange={setStorageId}
+              nothingFoundMessage="Add a shared storage first"
+            />
+          </Group>
+          {storageId && (
+            <NumberInput label="Storage limit for this person" placeholder="No limit" suffix=" MB" min={0} allowDecimal={false} value={limit} onChange={setLimit} />
+          )}
+          <Text size="xs" c="dimmed">
+            The new account joins the workspace and can create its own on the shared storage, so there is nothing to set up after signing up.
+          </Text>
           <Button
             leftSection={<IconPlus size={16} />}
             style={{ alignSelf: 'flex-start' }}
-            onClick={() => run(async () => (await api.adminCreateLink({ email: email.trim() || undefined, role, expiresInDays: Number(days) || null }), setEmail('')))}
+            onClick={() =>
+              run(async () => {
+                await api.adminCreateLink({
+                  email: email.trim() || undefined,
+                  role,
+                  expiresInDays: Number(days) || null,
+                  workspaceId,
+                  storageId,
+                  limitBytes: storageId && limit !== '' ? Number(limit) * MB : null,
+                });
+                setEmail('');
+              })
+            }
           >
             Create link
           </Button>
@@ -330,6 +360,11 @@ function Links({ links, onChanged, onError }: { links: RegistrationLink[] | null
                 <Text size="xs" c="dimmed">
                   {status(l)}
                 </Text>
+                {(l.workspace_name || l.storage_name) && (
+                  <Text size="xs" c="dimmed">
+                    {[l.workspace_name && `Joins ${l.workspace_name}`, l.storage_name && `Storage ${l.storage_name}${l.limit_bytes != null ? ` (${Math.round(l.limit_bytes / MB)} MB)` : ''}`].filter(Boolean).join(' · ')}
+                  </Text>
+                )}
                 {!l.used_at && (
                   <Text size="xs" ff="monospace" truncate="end" className="link-url">
                     {url(l.token)}

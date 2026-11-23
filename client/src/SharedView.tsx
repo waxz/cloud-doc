@@ -2,7 +2,7 @@ import { Alert, Button, Loader, Text } from '@mantine/core';
 import { IconFileText } from '@tabler/icons-react';
 import { useCallback, useEffect, useState } from 'react';
 import { api, atLeast, type Me, type OpenedShare, ROLE_LABEL } from './api';
-import { PageView } from './PageView';
+import { Loading, PageView } from './lazy';
 import { href, navigate } from './route';
 import { errorText } from './util';
 
@@ -63,7 +63,7 @@ export function SharedView({ token, pageId, me, dark, onSignIn, onError }: Props
             </Button>
           </Alert>
         )}
-        <PageView key={current} pageId={current} me={me?.user ?? null} dark={dark} linkFor={(id) => href.share(token, id)} onTitle={onTitle} onError={onError} />
+        <Loading><PageView key={current} pageId={current} me={me?.user ?? null} dark={dark} linkFor={(id) => href.share(token, id)} onTitle={onTitle} onError={onError} /></Loading>
       </main>
     </div>
   );

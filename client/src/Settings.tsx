@@ -1,4 +1,4 @@
-import { ActionIcon, Badge, Button, Divider, Group, Modal, Select, Stack, Table, Text, TextInput } from '@mantine/core';
+import { ActionIcon, Badge, Button, Divider, Group, Modal, MultiSelect, Select, Stack, Table, Text, TextInput } from '@mantine/core';
 import { useCallback, useEffect, useState } from 'react';
 import {
   api,
@@ -7,9 +7,11 @@ import {
   type Project,
   type ProjectMember,
   ROLE_LABEL,
+  type RegisteredMember,
   type Role,
   type User,
   type Workspace,
+  type WorkspaceStorageInfo,
 } from './api';
 import { errorText } from './util';
 
@@ -26,26 +28,57 @@ export function WorkspaceSettings({ workspace, me, opened, onClose, onChanged, o
   const [name, setName] = useState(workspace.name);
   const [members, setMembers] = useState<Member[]>([]);
   const [invites, setInvites] = useState<Invite[]>([]);
+  const [availableMembers, setAvailableMembers] = useState<RegisteredMember[]>([]);
+  const [memberSearch, setMemberSearch] = useState('');
   const [email, setEmail] = useState('');
   const [role, setRole] = useState('member');
   const [note, setNote] = useState('');
+  const [workspaceStorages, setWorkspaceStorages] = useState<WorkspaceStorageInfo | null>(null);
   const isAdmin = workspace.role !== 'member';
+  const isOwner = workspace.role === 'owner';
+  const deleteWorkspace = async () => {
+    if (!confirm(`Delete "${workspace.displayName}" with all projects, pages, files and history?`)) return;
+    try {
+      await api.deleteWorkspace(workspace.id);
+      onClose();
+      onChanged();
+    } catch (e) {
+      onError(errorText(e));
+    }
+  };
 
-  const load = useCallback(
-    () =>
-      api.members(workspace.id).then(
-        (r) => (setMembers(r.members), setInvites(r.invites)),
-        (e) => onError(errorText(e))
-      ),
-    [workspace.id, onError]
-  );
+  const load = useCallback(async () => {
+    try {
+      const [r, available, storageInfo] = await Promise.all([
+        api.members(workspace.id),
+        isAdmin ? api.availableMembers(workspace.id, '') : Promise.resolve([]),
+        isAdmin ? api.workspaceStorages(workspace.id) : Promise.resolve(null),
+      ]);
+      setMembers(r.members);
+      setInvites(r.invites);
+      setAvailableMembers(available);
+      setWorkspaceStorages(storageInfo);
+    } catch (e) {
+      onError(errorText(e));
+    }
+  }, [workspace.id, isAdmin, onError]);
   useEffect(() => {
     if (opened) {
       setName(workspace.name);
       setNote('');
+      setMemberSearch('');
+      setEmail('');
       load();
     }
   }, [opened, workspace.name, load]);
+
+  useEffect(() => {
+    if (!opened || !isAdmin) return;
+    const timeout = window.setTimeout(() => {
+      api.availableMembers(workspace.id, memberSearch).then(setAvailableMembers, (e) => onError(errorText(e)));
+    }, 150);
+    return () => window.clearTimeout(timeout);
+  }, [opened, isAdmin, workspace.id, memberSearch, onError]);
 
   const run = async (fn: () => Promise<unknown>) => {
     try {
@@ -61,16 +94,41 @@ export function WorkspaceSettings({ workspace, me, opened, onClose, onChanged, o
       <Stack>
         <Group align="end">
           <TextInput label="Name" value={name} onChange={(e) => setName(e.currentTarget.value)} disabled={!isAdmin} style={{ flex: 1 }} />
-          {isAdmin && (
+          {isOwner && (
             <Button variant="light" disabled={!name.trim() || name === workspace.name} onClick={() => run(async () => (await api.renameWorkspace(workspace.id, name.trim()), onChanged()))}>
               Rename
             </Button>
           )}
         </Group>
+        {isAdmin && workspaceStorages && (
+          <>
+            <Divider label="WebDAV storages" labelPosition="left" />
+            <MultiSelect
+              label="Where this workspace keeps its files and history"
+              description="Everyone in the workspace uses these, without needing a storage of their own. Add your own storage or one the admin shared with you; the workspace always keeps at least one."
+              data={workspaceStorages.storages.map((s) => ({ value: s.id, label: s.shared ? `${s.name} (shared)` : s.name }))}
+              value={workspaceStorages.assigned}
+              searchable
+              onChange={(storageIds) => storageIds.length > 0 && run(() => api.setWorkspaceStorages(workspace.id, storageIds).then(load))}
+              placeholder="Select a storage"
+            />
+          </>
+        )}
         <Divider label="Members" labelPosition="left" />
         {isAdmin && (
           <Group align="end">
-            <TextInput label="Add by email" placeholder="name@example.com" value={email} onChange={(e) => setEmail(e.currentTarget.value)} style={{ flex: 1 }} />
+            <Select
+              label="Add registered member"
+              placeholder="Search name or email"
+              searchable
+              clearable
+              nothingFoundMessage="No registered members found"
+              value={email}
+              onChange={(v) => setEmail(v ?? '')}
+              onSearchChange={setMemberSearch}
+              data={availableMembers.map((m) => ({ value: m.email, label: `${m.name} — ${m.email}` }))}
+              style={{ flex: 1 }}
+            />
             <Select w={120} value={role} onChange={(v) => v && setRole(v)} data={[{ value: 'member', label: 'Member' }, { value: 'admin', label: 'Admin' }]} allowDeselect={false} />
             <Button
               disabled={!email.trim()}
@@ -139,6 +197,14 @@ export function WorkspaceSettings({ workspace, me, opened, onClose, onChanged, o
             ))}
           </Table.Tbody>
         </Table>
+        {isOwner && (
+          <>
+            <Divider />
+            <Button variant="light" color="red" onClick={deleteWorkspace} style={{ alignSelf: 'flex-start' }}>
+              Delete workspace
+            </Button>
+          </>
+        )}
       </Stack>
     </Modal>
   );

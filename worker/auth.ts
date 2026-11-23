@@ -83,12 +83,22 @@ async function me(env: Env, user: User): Promise<Response> {
     .bind(user.id)
     .first<{ can_create_workspaces: number }>();
   const { results } = await env.DB.prepare(
-    `SELECT w.id, w.name, m.role FROM workspace_members m JOIN workspaces w ON w.id = m.workspace_id
+    `SELECT w.id, w.name, m.role,
+            (SELECT u.name FROM workspace_members om JOIN users u ON u.id = om.user_id
+             WHERE om.workspace_id = w.id AND om.role = 'owner' LIMIT 1) AS owner_name
+     FROM workspace_members m JOIN workspaces w ON w.id = m.workspace_id
      WHERE m.user_id = ? ORDER BY w.created_at`
   )
     .bind(user.id)
-    .all();
-  return json({ user, canCreateWorkspaces: !!flags?.can_create_workspaces, workspaces: results });
+    .all<{ id: string; name: string; role: 'owner' | 'admin' | 'member'; owner_name: string | null }>();
+  const workspaces = results.map((w) => ({
+    id: w.id,
+    name: w.name,
+    displayName: `${w.owner_name ?? 'User'}'s ${w.name}`,
+    ownerName: w.owner_name ?? '',
+    role: w.role,
+  }));
+  return json({ user, canCreateWorkspaces: !!flags?.can_create_workspaces, workspaces });
 }
 
 /** Whether the instance still needs its first (admin) account. */
@@ -104,12 +114,22 @@ interface RegistrationLink {
   token: string;
   email: string | null;
   role: 'admin' | 'member';
+  workspace_id: string | null;
+  workspace_role: string;
+  storage_id: string | null;
+  limit_bytes: number | null;
+  workspace_name?: string | null;
+  storage_name?: string | null;
 }
 
 async function validLink(env: Env, token: string): Promise<RegistrationLink | null> {
   return env.DB.prepare(
-    `SELECT token, email, role FROM registration_links
-     WHERE token = ? AND used_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`
+    `SELECT l.token, l.email, l.role, l.workspace_id, l.workspace_role, l.storage_id, l.limit_bytes,
+            w.name AS workspace_name, s.name AS storage_name
+     FROM registration_links l
+     LEFT JOIN workspaces w ON w.id = l.workspace_id
+     LEFT JOIN storages s ON s.id = l.storage_id AND s.shared = 1
+     WHERE l.token = ? AND l.used_at IS NULL AND (l.expires_at IS NULL OR l.expires_at > ?)`
   )
     .bind(token, Date.now())
     .first<RegistrationLink>();
@@ -119,7 +139,7 @@ async function validLink(env: Env, token: string): Promise<RegistrationLink | nu
 export async function registrationInfo(env: Env, token: string): Promise<Response> {
   const link = await validLink(env, token);
   if (!link) throw new HttpError(404, 'this registration link has expired or was already used');
-  return json({ email: link.email });
+  return json({ email: link.email, workspace: link.workspace_name ?? null, storage: link.storage_name ?? null });
 }
 
 /**
@@ -167,6 +187,23 @@ export async function signup(req: Request, env: Env): Promise<Response> {
       ).bind(user.id, email),
       env.DB.prepare('DELETE FROM workspace_invites WHERE email = ?').bind(email),
       ...(link ? [env.DB.prepare('UPDATE registration_links SET used_by = ? WHERE token = ?').bind(user.id, link.token)] : []),
+      // What the link allocates: a place in a workspace, and a shared storage with a limit.
+      ...(link?.workspace_id
+        ? [
+            env.DB.prepare(
+              `INSERT OR IGNORE INTO workspace_members (workspace_id, user_id, role)
+               SELECT id, ?, ? FROM workspaces WHERE id = ?`
+            ).bind(user.id, link.workspace_role === 'admin' ? 'admin' : 'member', link.workspace_id),
+          ]
+        : []),
+      ...(link?.storage_id
+        ? [
+            env.DB.prepare(
+              `INSERT OR IGNORE INTO storage_grants (storage_id, user_id, limit_bytes, created_at)
+               SELECT id, ?, ?, ? FROM storages WHERE id = ? AND shared = 1`
+            ).bind(user.id, link.limit_bytes, Date.now(), link.storage_id),
+          ]
+        : []),
     ]);
   } catch (err) {
     // Give the link back if the account couldn't be created.

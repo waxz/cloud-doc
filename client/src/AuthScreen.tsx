@@ -23,6 +23,7 @@ export function AuthScreen({ mode, note, onAuthed }: Props) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [joins, setJoins] = useState('');
   const [linkState, setLinkState] = useState<'loading' | 'ok' | string>(mode.kind === 'register' ? 'loading' : 'ok');
   const creating = mode.kind !== 'signin';
   const token = mode.kind === 'register' ? mode.token : undefined;
@@ -32,6 +33,7 @@ export function AuthScreen({ mode, note, onAuthed }: Props) {
     api.registration(token).then(
       (info) => {
         if (info.email) (setEmail(info.email), setLockedEmail(true));
+        setJoins([info.workspace && `You'll join the workspace “${info.workspace}”`, info.storage && `with the shared storage “${info.storage}” ready to use`].filter(Boolean).join(' '));
         setLinkState('ok');
       },
       (e) => setLinkState(errorText(e))
@@ -62,6 +64,11 @@ export function AuthScreen({ mode, note, onAuthed }: Props) {
           {mode.kind === 'setup' && (
             <Text size="sm" c="dimmed" ta="center">
               This is a new install. The account you create now is the admin, who invites everyone else.
+            </Text>
+          )}
+          {joins && (
+            <Text size="sm" c="dimmed" ta="center">
+              {joins}.
             </Text>
           )}
           {note && (
@@ -107,7 +114,7 @@ export function AuthScreen({ mode, note, onAuthed }: Props) {
                 {creating ? 'Create account' : 'Sign in'}
               </Button>
               {mode.kind === 'signin' && (
-                <Text size="xs" c="dimmed" ta="center">
+                <Text size="sm" c="dimmed" ta="center">
                   New here? Ask an admin for a registration link.
                 </Text>
               )}

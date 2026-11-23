@@ -19,6 +19,8 @@ export interface User {
 export interface Workspace {
   id: string;
   name: string;
+  displayName: string;
+  ownerName: string;
   role: WorkspaceRole;
 }
 export interface Me {
@@ -57,19 +59,53 @@ export interface Storage {
   username: string;
   hasPassword: boolean;
 }
+/** A storage the admin shares: users see its name, their limit and their use, never its address. */
+export interface SharedStorageForMe {
+  id: string;
+  name: string;
+  limit_bytes: number | null;
+  used: number;
+}
+export interface SharedStorageGrant {
+  user_id: string;
+  name: string;
+  email: string;
+  limit_bytes: number | null;
+  used: number;
+}
+export interface SharedStorage extends Storage {
+  grants: SharedStorageGrant[];
+}
+/** A file of a workspace, with the pages that use it. */
+export interface WorkspaceFile extends FileInfo {
+  owner_name: string | null;
+  storage_name: string | null;
+  used_count: number;
+  used_in: { id: string; title: string }[];
+  can_delete: boolean;
+}
+export interface DeletePreview {
+  pages: number;
+  files: (FileInfo & { shared: boolean; used_elsewhere: { id: string; title: string }[]; can_delete: boolean })[];
+}
 export interface StorageInput {
   name?: string;
   url?: string;
   username?: string;
   password?: string;
 }
+export interface WorkspaceStorageInfo {
+  storages: (Pick<Storage, 'id' | 'name'> & Partial<Storage> & { shared?: boolean })[];
+  assigned: string[];
+}
 export interface Settings {
   user: User;
   usage: number;
-  storageLimit: number | null;
   defaultStorageId: string | null;
+  canCreateWorkspaces: boolean;
   storages: Storage[];
-  workspaces: { id: string; name: string; storage_id: string | null }[];
+  sharedStorages: SharedStorageForMe[];
+  workspaces: { id: string; name: string; displayName: string; storage_id: string | null; storage_ids: { id: string; name: string }[] }[];
 }
 export interface AdminUser {
   id: string;
@@ -77,18 +113,42 @@ export interface AdminUser {
   name: string;
   role: 'admin' | 'member';
   can_create_workspaces: number;
-  storage_limit: number | null;
   disabled: number;
   created_at: number;
-  default_storage_id: string | null;
-  default_storage_name: string | null;
+  own_storages: number;
+  shared_storages: number;
   usage: number;
+}
+export interface UserUsage {
+  id: string;
+  name: string;
+  email: string;
+  role: 'admin' | 'member';
+  disabled: number;
+  storage_used: number;
+  grants: { storage_name: string; limit_bytes: number | null; used: number }[];
+  files: number;
+  comments: number;
+  requests_24h: number;
+  requests_7d: number;
+  requests_30d: number;
+  errors_24h: number;
+  bytes_in_24h: number;
+  bytes_out_24h: number;
+  peak_hour: number;
+  last_active: number | null;
+}
+export interface AdminStats {
+  now: number;
+  hour: number;
+  users: UserUsage[];
+  series: { hour: number; requests: number; errors: number }[];
+  dailyLimit: number;
 }
 export interface UserPatch {
   name?: string;
   role?: 'admin' | 'member';
   canCreateWorkspaces?: boolean;
-  storageLimit?: number | null;
   disabled?: boolean;
   password?: string;
 }
@@ -100,6 +160,12 @@ export interface RegistrationLink {
   expires_at: number | null;
   used_at: number | null;
   used_by_name: string | null;
+  workspace_id: string | null;
+  workspace_role: string;
+  workspace_name: string | null;
+  storage_id: string | null;
+  storage_name: string | null;
+  limit_bytes: number | null;
 }
 export interface PageInfo {
   page: Page;
@@ -113,6 +179,7 @@ export interface SearchHit {
   project_id: string;
   title: string;
   snippet: string;
+  matches: { n: number; before: string; text: string; after: string }[];
 }
 export interface Member {
   id: string;
@@ -123,6 +190,11 @@ export interface Member {
 export interface Invite {
   email: string;
   role: 'admin' | 'member';
+}
+export interface RegisteredMember {
+  id: string;
+  name: string;
+  email: string;
 }
 export interface ProjectMember {
   id: string;
@@ -142,6 +214,7 @@ export interface Version {
 export interface Comment {
   id: string;
   thread_id: string;
+  parent_id?: string | null;
   author_id: string | null;
   author_name: string;
   quote: string | null;
@@ -150,6 +223,45 @@ export interface Comment {
   edited_at: number | null;
   resolved_at: number | null;
   resolved_by_name: string | null;
+  visibility: 'public' | 'mentioned';
+  quote_page: number | null;
+  quote_rects: string | null;
+  quote_pdf_url: string | null;
+  quote_color: string | null;
+  quote_shape: string | null;
+  quote_start: number | null;
+  quote_end: number | null;
+}
+export interface Notification {
+  id: string;
+  comment_id: string;
+  thread_id: string;
+  page_id: string;
+  read_at: number | null;
+  created_at: number;
+  author_name: string;
+  body: string;
+  page_title: string;
+  workspace_id: string;
+}
+export interface PrivateMessage {
+  id: string;
+  sender_id: string;
+  recipient_id: string;
+  sender_name: string;
+  recipient_name: string;
+  body: string;
+  read_at: number | null;
+  created_at: number;
+}
+export interface Todo {
+  id: string;
+  title: string;
+  source_type: string | null;
+  source_id: string | null;
+  references: { type: 'comment' | 'url'; id?: string; url?: string; label?: string }[];
+  completed_at: number | null;
+  created_at: number;
 }
 export interface Share {
   token: string;
@@ -169,7 +281,9 @@ export interface OpenedShare {
 export class ApiError extends Error {
   constructor(
     readonly status: number,
-    message: string
+    message: string,
+    /** The rest of the error answer (e.g. the pages still using a file). */
+    readonly data: Record<string, unknown> = {}
   ) {
     super(message);
   }
@@ -182,33 +296,60 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
-    const msg = ((await res.json().catch(() => ({}))) as { error?: string }).error ?? res.statusText;
-    throw new ApiError(res.status, msg);
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new ApiError(res.status, body.error ?? res.statusText, body);
   }
   return (res.status === 204 ? undefined : await res.json()) as T;
 }
 
 const enc = encodeURIComponent;
 
+/**
+ * Shares one request between callers asking for the same thing at about the same time
+ * (the editor, the PDF viewer and the panel all load a page's comments after one change),
+ * and reuses the answer for `ttl` ms. A write calls `forget` so the next read is fresh.
+ */
+const shared = new Map<string, { at: number; value: Promise<unknown> }>();
+function cachedGet<T>(key: string, ttl: number, load: () => Promise<T>): Promise<T> {
+  const hit = shared.get(key);
+  if (hit && Date.now() - hit.at < ttl) return hit.value as Promise<T>;
+  const value = load();
+  shared.set(key, { at: Date.now(), value });
+  value.catch(() => shared.delete(key));
+  return value;
+}
+const forget = (prefix: string) => {
+  for (const key of shared.keys()) if (key.startsWith(prefix)) shared.delete(key);
+};
+const afterWrite = <T>(prefix: string, promise: Promise<T>) => promise.finally(() => forget(prefix));
+
 export const api = {
   me: () => call<Me>('GET', '/api/me'),
   authStatus: () => call<{ setup: boolean }>('GET', '/api/auth/status'),
-  registration: (token: string) => call<{ email: string | null }>('GET', `/api/register/${enc(token)}`),
+  registration: (token: string) => call<{ email: string | null; workspace: string | null; storage: string | null }>('GET', `/api/register/${enc(token)}`),
   signup: (email: string, name: string, password: string, token?: string) =>
-    call<Me>('POST', '/api/auth/signup', { email, name, password, token }),
-  login: (email: string, password: string) => call<Me>('POST', '/api/auth/login', { email, password }),
-  logout: () => call<void>('POST', '/api/auth/logout'),
+    afterWrite('', call<Me>('POST', '/api/auth/signup', { email, name, password, token })),
+  // Shared reads are per page and kept briefly: never carry them from one account to the next.
+  login: (email: string, password: string) => afterWrite('', call<Me>('POST', '/api/auth/login', { email, password })),
+  logout: () => afterWrite('', call<void>('POST', '/api/auth/logout')),
 
-  createWorkspace: (name: string) => call<Workspace>('POST', '/api/workspaces', { name }),
+  createWorkspace: (name: string, storageId: string) => afterWrite('', call<Workspace>('POST', '/api/workspaces', { name, storageId })),
   renameWorkspace: (wid: string, name: string) => call<void>('PATCH', `/api/workspaces/${wid}`, { name }),
+  deleteWorkspace: (wid: string) => call<void>('DELETE', `/api/workspaces/${wid}`),
   members: (wid: string) => call<{ members: Member[]; invites: Invite[] }>('GET', `/api/workspaces/${wid}/members`),
+  availableMembers: (wid: string, q = '') =>
+    call<RegisteredMember[]>('GET', `/api/workspaces/${wid}/available-members?q=${enc(q)}`),
   addMember: (wid: string, email: string, role: string) =>
     call<{ added?: boolean; invited?: boolean }>('POST', `/api/workspaces/${wid}/members`, { email, role }),
   setMemberRole: (wid: string, uid: string, role: string) => call<void>('PATCH', `/api/workspaces/${wid}/members/${uid}`, { role }),
   removeMember: (wid: string, uid: string) => call<void>('DELETE', `/api/workspaces/${wid}/members/${uid}`),
   removeInvite: (wid: string, email: string) => call<void>('DELETE', `/api/workspaces/${wid}/invites/${enc(email)}`),
+  workspaceStorages: (wid: string) => call<WorkspaceStorageInfo>('GET', `/api/workspaces/${wid}/storages`),
+  setWorkspaceStorages: (wid: string, storageIds: string[]) =>
+    call<void>('PUT', `/api/workspaces/${wid}/storages`, { storageIds }),
   search: (wid: string, q: string) => call<SearchHit[]>('GET', `/api/workspaces/${wid}/search?q=${enc(q)}`),
 
+  tree: (wid: string) => call<{ projects: Project[]; pages: Record<string, Page[]> }>('GET', `/api/workspaces/${wid}/tree`),
   projects: (wid: string) => call<Project[]>('GET', `/api/workspaces/${wid}/projects`),
   createProject: (wid: string, name: string, defaultRole: Role | null) =>
     call<Project>('POST', `/api/workspaces/${wid}/projects`, { name, defaultRole }),
@@ -221,7 +362,10 @@ export const api = {
   createPage: (pid: string, parentId: string | null) => call<Page>('POST', `/api/projects/${pid}/pages`, { parentId }),
   page: (id: string) => call<PageInfo>('GET', `/api/pages/${id}`),
   movePage: (id: string, parentId: string | null, position?: number) => call<Page>('PATCH', `/api/pages/${id}`, { parentId, position }),
-  deletePage: (id: string) => call<void>('DELETE', `/api/pages/${id}`),
+  deletePage: (id: string, files: 'keep' | 'delete' = 'keep') =>
+    call<{ filesDeleted: number; filesKept: number }>('DELETE', `/api/pages/${id}${files === 'delete' ? '?files=delete' : ''}`),
+  deletePreview: (id: string) => call<DeletePreview>('GET', `/api/pages/${id}/delete-preview`),
+  workspaceFiles: (wid: string) => call<{ files: WorkspaceFile[] }>('GET', `/api/workspaces/${wid}/files`),
 
   versions: (id: string) => call<Version[]>('GET', `/api/pages/${id}/versions`),
   saveVersion: (id: string) => call<Version>('POST', `/api/pages/${id}/versions`),
@@ -232,12 +376,40 @@ export const api = {
   },
   restoreVersion: (id: string, vid: string) => call<void>('POST', `/api/pages/${id}/versions/${vid}/restore`),
 
-  comments: (id: string) => call<Comment[]>('GET', `/api/pages/${id}/comments`),
-  addComment: (id: string, body: string, opts: { quote?: string; threadId?: string } = {}) =>
-    call<Comment>('POST', `/api/pages/${id}/comments`, { body, ...opts }),
-  editComment: (cid: string, body: string) => call<void>('PATCH', `/api/comments/${cid}`, { body }),
-  resolveComment: (cid: string, resolved: boolean) => call<void>('PATCH', `/api/comments/${cid}`, { resolved }),
-  deleteComment: (cid: string) => call<void>('DELETE', `/api/comments/${cid}`),
+  invalidateComments: () => forget('comments:'),
+  comments: (id: string) => cachedGet(`comments:${id}`, 2000, () => call<Comment[]>('GET', `/api/pages/${id}/comments`)),
+  commentMembers: (id: string) => cachedGet(`members:${id}`, 60_000, () => call<RegisteredMember[]>('GET', `/api/pages/${id}/comment-members`)),
+  addComment: (id: string, body: string, opts: {
+    quote?: string;
+    quotePage?: number;
+    quoteRects?: number[][];
+    quotePdfUrl?: string;
+    quoteColor?: string;
+    quoteShape?: string;
+    quoteStart?: number;
+    quoteEnd?: number;
+    threadId?: string;
+    parentId?: string;
+    mentionIds?: string[];
+    visibility?: 'public' | 'mentioned';
+  } = {}) =>
+    afterWrite('comments:', call<Comment>('POST', `/api/pages/${id}/comments`, { body, ...opts })),
+  editComment: (cid: string, body: string) => afterWrite('comments:', call<void>('PATCH', `/api/comments/${cid}`, { body })),
+  updateCommentAnchor: (cid: string, quoteStart: number, quoteEnd: number, quote?: string) =>
+    call<void>('PATCH', `/api/comments/${cid}`, { quoteStart, quoteEnd, ...(quote !== undefined ? { quote } : {}) }),
+  setCommentVisibility: (cid: string, visibility: 'public' | 'mentioned', mentionIds: string[] = []) => afterWrite('comments:', call<void>('PATCH', `/api/comments/${cid}`, { visibility, mentionIds })),
+  setCommentStyle: (cid: string, style: { quoteColor?: string; quoteShape?: string }) => afterWrite('comments:', call<void>('PATCH', `/api/comments/${cid}`, style)),
+  resolveComment: (cid: string, resolved: boolean) => afterWrite('comments:', call<void>('PATCH', `/api/comments/${cid}`, { resolved })),
+  deleteComment: (cid: string) => afterWrite('comments:', call<void>('DELETE', `/api/comments/${cid}`)),
+  inbox: () => call<{ notifications: Notification[] }>('GET', '/api/inbox'),
+  notifications: () => call<Notification[]>('GET', '/api/notifications'),
+  setNotificationRead: (nid: string, read: boolean) => call<void>('PATCH', `/api/notifications/${nid}`, { read }),
+  messages: () => call<PrivateMessage[]>('GET', '/api/messages'),
+  sendMessage: (recipientId: string, body: string) => call<PrivateMessage>('POST', '/api/messages', { recipientId, body }),
+  setMessageRead: (id: string, read: boolean) => call<void>('PATCH', `/api/messages/${id}`, { read }),
+  todos: () => call<Todo[]>('GET', '/api/todos'),
+  addTodo: (title: string, sourceType?: string, sourceId?: string, references?: Todo['references']) => call<Todo>('POST', '/api/todos', { title, sourceType, sourceId, references }),
+  setTodoCompleted: (id: string, completed: boolean) => call<void>('PATCH', `/api/todos/${id}`, { completed }),
 
   shares: (id: string) => call<Share[]>('GET', `/api/pages/${id}/shares`),
   createShare: (id: string, role: Role, includeSubpages: boolean, expiresInDays: number | null) =>
@@ -257,16 +429,26 @@ export const api = {
   setWorkspaceStorage: (uid: string, wid: string, storageId: string | null) =>
     call<void>('PUT', `/api/users/${uid}/workspaces/${wid}/storage`, { storageId }),
 
+  adminStats: () => call<AdminStats>('GET', '/api/admin/stats'),
   adminUsers: () => call<AdminUser[]>('GET', '/api/admin/users'),
   adminCreateUser: (u: { email: string; name: string; password: string } & UserPatch) => call<{ id: string }>('POST', '/api/admin/users', u),
   adminUpdateUser: (uid: string, patch: UserPatch) => call<void>('PATCH', `/api/admin/users/${uid}`, patch),
   adminDeleteUser: (uid: string) => call<void>('DELETE', `/api/admin/users/${uid}`),
+  adminSharedStorages: () => call<SharedStorage[]>('GET', '/api/admin/shared-storages'),
+  adminCreateSharedStorage: (s: StorageInput) => call<SharedStorage>('POST', '/api/admin/shared-storages', s),
+  adminUpdateSharedStorage: (sid: string, s: StorageInput) => call<Storage>('PATCH', `/api/admin/shared-storages/${sid}`, s),
+  adminDeleteSharedStorage: (sid: string) => call<void>('DELETE', `/api/admin/shared-storages/${sid}`),
+  adminTestSharedStorage: (sid: string | null, s: StorageInput) =>
+    call<{ ok: boolean; message: string }>('POST', sid ? `/api/admin/shared-storages/${sid}/test` : '/api/admin/shared-storages/test', s),
+  adminSetGrant: (sid: string, uid: string, limitBytes: number | null) => call<void>('PUT', `/api/admin/shared-storages/${sid}/grants/${uid}`, { limitBytes }),
+  adminRemoveGrant: (sid: string, uid: string) => call<void>('DELETE', `/api/admin/shared-storages/${sid}/grants/${uid}`),
   adminLinks: () => call<RegistrationLink[]>('GET', '/api/admin/links'),
-  adminCreateLink: (l: { email?: string; role?: string; expiresInDays?: number | null }) => call<RegistrationLink>('POST', '/api/admin/links', l),
+  adminWorkspaces: () => call<{ id: string; name: string }[]>('GET', '/api/admin/workspaces'),
+  adminCreateLink: (l: { email?: string; role?: string; expiresInDays?: number | null; workspaceId?: string | null; workspaceRole?: string; storageId?: string | null; limitBytes?: number | null }) => call<RegistrationLink>('POST', '/api/admin/links', l),
   adminDeleteLink: (token: string) => call<void>('DELETE', `/api/admin/links/${enc(token)}`),
 
   files: (pageId: string) => call<FileInfo[]>('GET', `/api/pages/${pageId}/files`),
-  deleteFile: (fid: string) => call<void>('DELETE', `/api/files/${fid}`),
+  deleteFile: (fid: string, force = false) => call<void>('DELETE', `/api/files/${fid}${force ? '?force=1' : ''}`),
   async upload(pageId: string, file: File): Promise<FileInfo> {
     const res = await fetch(`/api/pages/${pageId}/files`, {
       method: 'POST',
