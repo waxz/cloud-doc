@@ -397,7 +397,7 @@ export async function addComment(req: Request, env: Env, u: User | null, id: str
       if (inserts.length) await env.DB.batch(inserts);
     }
   }
-  await tellRoom(env, id, '/notify', { type: 'comments' });
+  await tellRoom(env, id, '/notify', { type: 'comments', from: req.headers.get('x-tab-id') });
   return json(row, 201);
 }
 
@@ -548,6 +548,8 @@ export async function updateComment(req: Request, env: Env, u: User | null, cid:
       .run();
   }
   if (b.quoteStart !== undefined && b.quoteEnd !== undefined) {
+    // Highlight positions follow the document's text, which only people who can edit it change.
+    if (!atLeast(role, 'editor')) throw new HttpError(403, 'only editors move highlights');
     const qStart = Number.isInteger(b.quoteStart) && Number(b.quoteStart) >= 0 ? Number(b.quoteStart) : null;
     const qEnd = Number.isInteger(b.quoteEnd) && Number(b.quoteEnd) >= 0 ? Number(b.quoteEnd) : null;
     if (typeof b.quote === 'string') {
@@ -582,7 +584,38 @@ export async function updateComment(req: Request, env: Env, u: User | null, cid:
       await syncThreadVisibility(env, c.page_id, c.thread_id, extra);
     }
   }
-  await tellRoom(env, c.page_id, '/notify', { type: 'comments' });
+  // Moving a highlight with the text changes nothing anyone else needs to reload.
+  const anchorOnly = Object.keys(b).every((k) => k === 'quoteStart' || k === 'quoteEnd' || k === 'quote');
+  if (!anchorOnly) await tellRoom(env, c.page_id, '/notify', { type: 'comments', from: req.headers.get('x-tab-id') });
+  return noContent();
+}
+
+/**
+ * Saves where several highlights now sit after an edit, in one request. Quiet on purpose: no live
+ * notice (nobody needs to reload because a highlight moved with its text), and rows that already hold
+ * these positions are not written.
+ */
+export async function updateAnchors(req: Request, env: Env, u: User | null, id: string): Promise<Response> {
+  const user = requireUser(u);
+  await requirePage(req, env, user, id, 'editor');
+  const b = await readJson<{ anchors?: { id?: unknown; start?: unknown; end?: unknown; quote?: unknown }[] }>(req);
+  const list = Array.isArray(b.anchors) ? b.anchors.slice(0, 40) : [];
+  const stmts = [];
+  for (const a of list) {
+    if (typeof a.id !== 'string' || !Number.isInteger(a.start) || !Number.isInteger(a.end)) continue;
+    const start = Number(a.start);
+    const end = Number(a.end);
+    if (start < 0 || end < start) continue;
+    const quote = typeof a.quote === 'string' ? a.quote.slice(0, 500) : null;
+    stmts.push(
+      env.DB.prepare(
+        `UPDATE comments SET quote_start = ?1, quote_end = ?2, quote = COALESCE(?3, quote)
+         WHERE id = ?4 AND page_id = ?5 AND thread_id = id
+           AND (quote_start IS NOT ?1 OR quote_end IS NOT ?2 OR (?3 IS NOT NULL AND quote IS NOT ?3))`
+      ).bind(start, end, quote, a.id, id)
+    );
+  }
+  if (stmts.length) await env.DB.batch(stmts);
   return noContent();
 }
 
@@ -600,7 +633,7 @@ export async function deleteComment(req: Request, env: Env, u: User | null, cid:
        DELETE FROM comments WHERE id IN (SELECT id FROM d)`
     ).bind(cid).run();
   }
-  await tellRoom(env, c.page_id, '/notify', { type: 'comments' });
+  await tellRoom(env, c.page_id, '/notify', { type: 'comments', from: req.headers.get('x-tab-id') });
   return noContent();
 }
 

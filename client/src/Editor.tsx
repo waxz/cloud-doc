@@ -16,7 +16,8 @@ import { IconFileTypePdf, IconMessagePlus, IconMoodSmile } from '@tabler/icons-r
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
-import { api, type Comment } from './api';
+import { api, TAB_ID, type Comment } from './api';
+import { attachLiveMode } from './liveMode';
 import { COMMENT_COLORS, HIGHLIGHT_SHAPES, PageContext, type HighlightShape, schema, type Schema } from './blocks';
 import { errorText, highlightPositions, takeFind } from './util';
 
@@ -250,13 +251,15 @@ function mapHighlight(
  * body. Mount with `key={pageId}` so each page gets a fresh connection.
  */
 export function PageEditor({ pageId, me, canEdit, canComment, dark, onTitle, onIcon, onMessage, onEditor, onComment, onError }: Props) {
-  const [{ doc, provider }] = useState(() => {
+  const [{ doc, provider, liveMode }] = useState(() => {
     const doc = new Y.Doc();
     const provider = new YProvider(window.location.host, pageId, doc, {
       party: 'page-room',
       protocol: window.location.protocol === 'https:' ? 'wss' : 'ws',
     });
-    return { doc, provider };
+    // Quiet (batched edits, no cursors) until the room says two or more people are editing.
+    const liveMode = attachLiveMode(provider, doc, canEdit);
+    return { doc, provider, liveMode };
   });
   const meta = doc.getMap<string>('meta');
   const [title, setTitle] = useState('');
@@ -273,27 +276,36 @@ export function PageEditor({ pageId, me, canEdit, canComment, dark, onTitle, onI
   const pendingAnchorSaves = useRef<Map<string, { start: number; end: number; quote?: string; timer: any }>>(new Map());
 
   // What the server already has for each comment, so unchanged positions are never re-sent.
+  // Moves are gathered and sent as one request: a single edit can shift every highlight below it.
   const savedAnchors = useRef<Map<string, string>>(new Map());
-  const scheduleAnchorSave = useCallback((cid: string, start: number, end: number, quote?: string) => {
-    if (savedAnchors.current.get(cid) === `${start}:${end}:${quote ?? ''}`) return;
-    const existing = pendingAnchorSaves.current.get(cid);
-    if (existing) clearTimeout(existing.timer);
-    const timer = setTimeout(() => {
-      pendingAnchorSaves.current.delete(cid);
-      savedAnchors.current.set(cid, `${start}:${end}:${quote ?? ''}`);
-      api.updateCommentAnchor(cid, start, end, quote).catch(() => {});
-    }, 3000);
-    pendingAnchorSaves.current.set(cid, { start, end, quote, timer });
-  }, []);
-
-  const flushAnchorSaves = useCallback(() => {
-    pendingAnchorSaves.current.forEach((val, cid) => {
-      clearTimeout(val.timer);
-      savedAnchors.current.set(cid, `${val.start}:${val.end}:${val.quote ?? ''}`);
-      api.updateCommentAnchor(cid, val.start, val.end, val.quote).catch(() => {});
-    });
+  const anchorTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const sendAnchors = useCallback(() => {
+    clearTimeout(anchorTimer.current);
+    const batch = [...pendingAnchorSaves.current].map(([id, v]) => ({ id, start: v.start, end: v.end, quote: v.quote }));
     pendingAnchorSaves.current.clear();
-  }, []);
+    for (let i = 0; i < batch.length; i += 40) {
+      const part = batch.slice(i, i + 40);
+      for (const a of part) savedAnchors.current.set(a.id, `${a.start}:${a.end}:${a.quote ?? ''}`);
+      api.updateAnchors(pageId, part).catch(() => {});
+    }
+  }, [pageId]);
+  const scheduleAnchorSave = useCallback((cid: string, start: number, end: number, quote?: string) => {
+    // Only people who can edit move highlights on the server (they are the ones changing the text).
+    if (!canEdit) return;
+    if (savedAnchors.current.get(cid) === `${start}:${end}:${quote ?? ''}`) return;
+    pendingAnchorSaves.current.set(cid, { start, end, quote, timer: undefined });
+    clearTimeout(anchorTimer.current);
+    anchorTimer.current = setTimeout(sendAnchors, 5000);
+  }, [canEdit, sendAnchors]);
+
+  const flushAnchorSaves = sendAnchors;
+  useEffect(() => {
+    window.addEventListener('pagehide', sendAnchors);
+    return () => {
+      window.removeEventListener('pagehide', sendAnchors);
+      sendAnchors(); // leaving the page: don't lose highlight moves still waiting
+    };
+  }, [sendAnchors]);
 
   useEffect(() => {
     flushAnchorSaves();
@@ -347,7 +359,11 @@ export function PageEditor({ pageId, me, canEdit, canComment, dark, onTitle, onI
     };
     const onCustom = (message: string) => {
       try {
-        onMessage?.((JSON.parse(message) as { type: string }).type);
+        const notice = JSON.parse(message) as { type: string; live?: boolean; from?: string };
+        if (notice.type === 'mode') return liveMode.setLive(!!notice.live);
+        // The tab that made a change already has it.
+        if (notice.from && notice.from === TAB_ID) return;
+        onMessage?.(notice.type);
       } catch {
         // Not one of ours.
       }
@@ -362,6 +378,7 @@ export function PageEditor({ pageId, me, canEdit, canComment, dark, onTitle, onI
       provider.off('sync', onSync);
       provider.off('custom-message', onCustom);
       provider.awareness.off('change', onAwareness);
+      liveMode.dispose();
       provider.destroy();
       doc.destroy();
     };

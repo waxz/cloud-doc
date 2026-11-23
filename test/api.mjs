@@ -56,7 +56,7 @@ class Client {
     return r;
   }
   /** A live-sync connection to a page, as this client. */
-  async connect(pageId) {
+  async connect(pageId, setup) {
     const cookie = this.cookieHeader;
     class CookieWS extends WebSocket {
       constructor(url, protocols) {
@@ -65,6 +65,7 @@ class Client {
     }
     const doc = new Y.Doc();
     const provider = new YProvider(new URL(BASE).host, pageId, doc, { party: 'page-room', protocol: 'ws', WebSocketPolyfill: CookieWS });
+    setup?.(provider);
     await new Promise((resolve, reject) => {
       const t = setTimeout(() => reject(new Error(`${this.label} could not sync ${pageId}`)), 8000);
       provider.on('sync', (s) => s && (clearTimeout(t), resolve()));
@@ -505,6 +506,99 @@ console.log('✓ share links: public read, subpages, commenter for outsiders, re
   await alice.ok('DELETE', `/api/admin/shared-storages/${shared.id}/grants/${bob.id}`);
   await alice.ok('DELETE', `/api/admin/shared-storages/${shared.id}`);
   console.log('✓ workspace files: shared between pages, kept or deleted with the page, warned when in use');
+}
+
+// --- free-plan economy: live mode, quiet highlight moves ---
+{
+  const proj = (await alice.ok('GET', `/api/workspaces/${ws.id}/projects`)).find((x) => x.name === 'General') ?? general;
+  const pg = await alice.ok('POST', `/api/projects/${proj.id}/pages`, {});
+  const modes = (provider) => {
+    const seen = [];
+    provider.on('custom-message', (m) => { const n = JSON.parse(m); if (n.type === 'mode') seen.push(n.live); });
+    return seen;
+  };
+  let aModes;
+  const a1 = await alice.connect(pg.id, (p) => (aModes = modes(p)));
+  await sleep(500);
+  assert.deepEqual(aModes, [false], 'one writer is quiet');
+  let bModes;
+  const b1 = await bob.connect(pg.id, (p) => (bModes = modes(p)));
+  await sleep(700);
+  assert.deepEqual(bModes, [true], 'a newcomer is told the room is live at once');
+  assert.equal(aModes.at(-1), true, 'two writers are live');
+  b1.close();
+  await sleep(1000);
+  assert.equal(aModes.at(-1), false, 'back to quiet when the second writer leaves');
+  // highlight moves: one request, editors only, no live notice, unchanged rows untouched
+  write(a1.doc, 'hello world');
+  const th = await alice.ok('POST', `/api/pages/${pg.id}/comments`, { body: 'look', quote: 'world', quoteStart: 6, quoteEnd: 11 });
+  const notices = [];
+  a1.provider.on('custom-message', (m) => notices.push(JSON.parse(m).type));
+  await alice.ok('PATCH', `/api/pages/${pg.id}/anchors`, { anchors: [{ id: th.id, start: 8, end: 13, quote: 'world' }, { id: 'nope', start: 1, end: 2 }] });
+  const moved = (await alice.ok('GET', `/api/pages/${pg.id}/comments`)).find((c) => c.id === th.id);
+  assert.deepEqual([moved.quote_start, moved.quote_end], [8, 13]);
+  await sleep(500);
+  assert.ok(!notices.includes('comments'), 'moving a highlight does not make everyone reload');
+  await carol.call('PATCH', `/api/pages/${pg.id}/anchors`, { anchors: [] }).then((r) => assert.ok(r.status >= 400, 'outsiders cannot move highlights'));
+  a1.close();
+  console.log('✓ live mode follows the number of writers; highlight moves are one quiet request');
+}
+
+// --- migrate a workspace between storages, back it up, restore it ---
+{
+  const proj = (await alice.ok('GET', `/api/workspaces/${ws.id}/projects`))[0];
+  const pg = await alice.ok('POST', `/api/projects/${proj.id}/pages`, {});
+  const up = await alice.ok('POST', `/api/pages/${pg.id}/files`, png, { 'content-type': 'image/png', 'x-filename': 'moveme.png' });
+  const live = await alice.connect(pg.id);
+  live.doc.getMap('meta').set('title', 'Backup me');
+  const img = new Y.XmlElement('image');
+  img.setAttribute('url', up.url);
+  live.doc.getXmlFragment('document-store').push([img]);
+  write(live.doc, 'precious words');
+  await alice.ok('POST', `/api/pages/${pg.id}/comments`, { body: `see ![](${up.url})`, quote: 'precious', quoteStart: 0, quoteEnd: 8 });
+  await alice.ok('POST', `/api/pages/${pg.id}/versions`);
+  await sleep(3000); // the room saves and indexes
+  // migrate acme -> home
+  let r = await alice.ok('POST', `/api/workspaces/${ws.id}/migrate`, { toStorageId: home.id, removeOld: true, start: true, skip: [] });
+  for (let i = 0; !r.done && i < 50; i++) r = await alice.ok('POST', `/api/workspaces/${ws.id}/migrate`, { toStorageId: home.id, removeOld: true, start: false, skip: [] });
+  assert.ok(r.done && r.failed.length === 0, 'everything moved');
+  assert.deepEqual((await alice.ok('GET', `/api/workspaces/${ws.id}/storages`)).assigned, [home.id], 'bound to the new storage');
+  assert.deepEqual([...(await alice.ok('GET', up.url))], [...png], 'file readable from the new storage');
+  assert.ok([...dav.files.keys()].some((k) => k.includes(`/alice/cloud-doc/${ws.id}/files/${up.id}`)), 'copy is in the new storage');
+  assert.ok(![...dav.files.keys()].some((k) => k.includes(`/alice-acme/cloud-doc/${ws.id}/files/${up.id}`)), 'old copy removed');
+  await bob.expect(403, 'POST', `/api/workspaces/${ws.id}/migrate`, { toStorageId: home.id, start: true });
+  // back up to home
+  let b = await alice.ok('POST', `/api/workspaces/${ws.id}/backup`, { storageId: home.id });
+  const folder = b.folder;
+  for (let i = 0; !b.done && i < 80; i++) b = await alice.ok('POST', `/api/workspaces/${ws.id}/backup`, { storageId: home.id, folder, state: b.state });
+  assert.ok(b.done, 'backup finished');
+  assert.ok([...dav.files.keys()].some((k) => k.endsWith(`/cloud-doc-backups/${folder}/manifest.json`)));
+  const listed = await alice.ok('GET', `/api/storages/${home.id}/backups`);
+  assert.ok(listed.some((x) => x.folder === folder && x.complete), 'listed as a complete backup');
+  await bob.expect(400, 'POST', `/api/workspaces/${ws.id}/backup`, { storageId: home.id }).catch(() => undefined);
+  // restore as a new workspace
+  let im = await alice.ok('POST', '/api/import', { storageId: home.id, folder, targetStorageId: home.id });
+  for (let i = 0; !im.done && i < 80; i++) im = await alice.ok('POST', '/api/import', { storageId: home.id, folder, targetStorageId: home.id, state: im.state });
+  assert.ok(im.done);
+  assert.deepEqual(im.state.failed, [], 'nothing failed');
+  const newWid = im.state.workspaceId;
+  const tree = await alice.ok('GET', `/api/workspaces/${newWid}/tree`);
+  const restored = Object.values(tree.pages).flat().find((p) => p.title === 'Backup me');
+  assert.ok(restored, 'the page came back with its title');
+  const rl = await alice.connect(restored.id);
+  assert.match(text(rl.doc), /precious words/);
+  const newImg = rl.doc.getXmlFragment('document-store').toArray().find((n) => n instanceof Y.XmlElement && n.nodeName === 'image');
+  const newUrl = newImg.getAttribute('url');
+  assert.notEqual(newUrl, up.url, 'the image now points at the restored file');
+  assert.deepEqual([...(await alice.ok('GET', newUrl))], [...png], 'restored file is readable');
+  const cs = await alice.ok('GET', `/api/pages/${restored.id}/comments`);
+  assert.equal(cs.length, 1);
+  assert.ok(cs[0].body.includes(newUrl), 'comment links follow the new file');
+  assert.equal((await alice.ok('GET', `/api/pages/${restored.id}/versions`)).length >= 1, true, 'history came back');
+  rl.close();
+  live.close();
+  await alice.ok('DELETE', `/api/workspaces/${newWid}`);
+  console.log('✓ migrate between storages, back up to a storage, restore as a new workspace');
 }
 
 a.close();

@@ -7,6 +7,7 @@ import { useStorageKey } from './secret.js';
 import { HttpError, json, newId } from './http.js';
 import { WebDav, checkQuota, historyKey, resolveStorage, storageById, workspaceOfPage } from './storage.js';
 import { fileIdsIn, syncFileRefs } from './files.js';
+import { deriveId, fileIdsInText, rewriteDocument } from './rewrite.js';
 
 /** BlockNote keeps the document in this XML fragment; the title lives in `meta`. */
 export const FRAGMENT = 'document-store';
@@ -16,10 +17,34 @@ export const NAME_HEADER = 'x-wiki-name';
 
 const CHUNK = 1024 * 1024; // SQLite rows are capped at 2 MB, so state is stored in chunks.
 const AUTO_SNAPSHOT_EVERY = 10 * 60 * 1000;
+/**
+ * Search text, title and file references go to D1 (FTS5 rows are many rows written each), so while a
+ * page is open they are refreshed at most this often, and at once when the last person leaves.
+ * A rename is indexed immediately; only body edits wait.
+ */
+const INDEX_EVERY = 60 * 1000;
+/** A page's room refuses more connections than this (each one is a hibernating socket plus awareness state). */
+const MAX_CONNECTIONS = 50;
+/** One socket may send this many Yjs sync messages per window before it is closed as abusive. */
+const SYNC_WINDOW_MS = 10_000;
+const SYNC_WINDOW_MAX = 1500;
+/** Awareness (cursors, presence) is dropped, not queued, above this sustained rate per socket. */
+const AWARENESS_PER_SEC = 20;
+const AWARENESS_BURST = 40;
+const MAX_MESSAGE_BYTES = 16 * 1024 * 1024;
+/** The room keeps at most this much document state; a page this big is not a wiki page. */
+const MAX_STATE_BYTES = 40 * 1024 * 1024;
 
 interface ConnState {
   role: Role;
   name: string;
+}
+
+interface Meter {
+  tokens: number;
+  at: number;
+  syncStart: number;
+  syncCount: number;
 }
 
 /**
@@ -50,6 +75,10 @@ export class PageRoom extends YServer<Env> {
     this.exec('INSERT INTO kv (k, v) VALUES (?, ?) ON CONFLICT (k) DO UPDATE SET v = excluded.v', k, v);
   }
 
+  /** Per-socket traffic meters (memory only: they restart when the room wakes from hibernation). */
+  private meters = new Map<string, Meter>();
+  private lastLive: boolean | undefined;
+
   onConnect(conn: Connection<ConnState>, ctx: ConnectionContext): void | Promise<void> {
     const role = ctx.request.headers.get(ROLE_HEADER) as Role | null;
     // Only the Worker can open a connection here, and it always sets the role.
@@ -57,8 +86,78 @@ export class PageRoom extends YServer<Env> {
       conn.close(4403, 'forbidden');
       return;
     }
+    if ([...this.getConnections()].length > MAX_CONNECTIONS) {
+      conn.close(4429, 'too many people on this page');
+      return;
+    }
     conn.setState({ role, name: ctx.request.headers.get(NAME_HEADER) ?? '' });
-    return super.onConnect(conn, ctx);
+    const result = super.onConnect(conn, ctx);
+    this.announceMode(conn);
+    return result;
+  }
+
+  /**
+   * "Live" collaboration (cursors sent as they move, edits sent as they are typed) only matters when two or
+   * more people can edit. With one writer, or only readers, clients stop sending cursors and batch their
+   * edits, which cuts the messages (and the rows written to save them) a lot. The room tells everyone
+   * whenever the answer changes, and tells each new connection at once.
+   */
+  private isLive(except?: Connection): boolean {
+    let writers = 0;
+    for (const c of this.getConnections<ConnState>()) {
+      if (c.id !== except?.id && c.state && atLeast(c.state.role, 'editor') && ++writers >= 2) return true;
+    }
+    return false;
+  }
+
+  private announceMode(joined?: Connection, leaving?: Connection): void {
+    const live = this.isLive(leaving);
+    const message = JSON.stringify({ type: 'mode', live });
+    if (joined) this.sendCustomMessage(joined, message);
+    if (live !== this.lastLive) {
+      this.lastLive = live;
+      for (const c of this.getConnections()) if (c.id !== joined?.id && c.id !== leaving?.id) this.sendCustomMessage(c, message);
+    }
+  }
+
+  onClose(conn: Connection, code: number, reason: string, wasClean: boolean): void | Promise<void> {
+    this.meters.delete(conn.id);
+    const result = super.onClose(conn, code, reason, wasClean);
+    this.announceMode(undefined, conn);
+    // The last person leaving: write down what they did now rather than waiting out the throttle.
+    if (![...this.getConnections()].some((c) => c.id !== conn.id)) {
+      this.ctx.waitUntil(this.persist(true).catch((err) => console.error('final save failed', err)));
+    }
+    return result;
+  }
+
+  /**
+   * Cheap guards in front of the Yjs handler. Viewers and commenters can open a socket (shared links
+   * included), and every message they send is billed, so a flood is cut off here: cursor traffic over
+   * the allowed rate is dropped, and a socket that keeps sending sync messages is closed.
+   */
+  onMessage(conn: Connection, message: string | ArrayBuffer | ArrayBufferView): void | Promise<void> {
+    if (typeof message !== 'string') {
+      const size = message.byteLength;
+      if (size > MAX_MESSAGE_BYTES) return void conn.close(4413, 'message too large');
+      const first = message instanceof ArrayBuffer ? new Uint8Array(message)[0] : new Uint8Array(message.buffer, message.byteOffset, 1)[0];
+      const now = Date.now();
+      const m = this.meters.get(conn.id) ?? { tokens: AWARENESS_BURST, at: now, syncStart: now, syncCount: 0 };
+      this.meters.set(conn.id, m);
+      if (first === 1) {
+        m.tokens = Math.min(AWARENESS_BURST, m.tokens + ((now - m.at) / 1000) * AWARENESS_PER_SEC);
+        m.at = now;
+        if (m.tokens < 1) return; // dropped: the next cursor position replaces this one anyway
+        m.tokens -= 1;
+      } else {
+        if (now - m.syncStart > SYNC_WINDOW_MS) {
+          m.syncStart = now;
+          m.syncCount = 0;
+        }
+        if (++m.syncCount > SYNC_WINDOW_MAX) return void conn.close(4429, 'too many messages');
+      }
+    }
+    return super.onMessage(conn, message);
   }
 
   /** Viewers and commenters receive the document but their edits are ignored. */
@@ -81,13 +180,29 @@ export class PageRoom extends YServer<Env> {
   }
 
   async onSave(): Promise<void> {
+    await this.persist(false);
+  }
+
+  /** The throttled index/refs work runs from an alarm when a body edit had to wait. */
+  async onAlarm(): Promise<void> {
     this.ensureTables();
-    // Saves are triggered by any traffic on the document (cursors, reconnects), not just edits.
-    // Writing the whole state and re-indexing the page each time costs rows written in both
-    // the room's storage and D1, so do only the parts whose input actually changed.
+    await this.reindex(true);
+  }
+
+  /**
+   * Saves the document to the room's own storage when it changed, then refreshes the D1 copy
+   * (title, search text, file references) and the history. `force` skips the D1 throttle.
+   * Saves are triggered by document edits only; unchanged state writes nothing.
+   */
+  private async persist(force: boolean): Promise<void> {
+    this.ensureTables();
     const sv = this.stateVector();
     if (this.getKv('saved_sv') !== sv) {
       const state = Y.encodeStateAsUpdate(this.document);
+      if (state.byteLength > MAX_STATE_BYTES) {
+        console.error('page state is too large to save', this.name, state.byteLength);
+        return;
+      }
       this.ctx.storage.transactionSync(() => {
         this.exec('DELETE FROM doc_chunks');
         for (let i = 0, off = 0; off < state.byteLength; i++, off += CHUNK) {
@@ -95,28 +210,8 @@ export class PageRoom extends YServer<Env> {
         }
         this.exec('INSERT INTO kv (k, v) VALUES (?, ?) ON CONFLICT (k) DO UPDATE SET v = excluded.v', 'saved_sv', sv);
       });
-
-      const title = this.title();
-      const icon = String(this.document.getMap('meta').get('icon') ?? '').slice(0, 16);
-      const body = fragmentText(this.document.getXmlFragment(FRAGMENT));
-      const sig = hashText(`${title}\u0000${icon}\u0000${body}`);
-      if (this.getKv('indexed_sig') !== sig) {
-        await this.env.DB.batch([
-          this.env.DB.prepare('UPDATE pages SET title = ?, icon = ?, updated_at = ? WHERE id = ?').bind(title, icon, Date.now(), this.name),
-          this.env.DB.prepare('DELETE FROM pages_fts WHERE page_id = ?').bind(this.name),
-          this.env.DB.prepare(
-            'INSERT INTO pages_fts (page_id, project_id, title, body) SELECT id, project_id, ?, ? FROM pages WHERE id = ?'
-          ).bind(title, body, this.name),
-        ]);
-        this.setKv('indexed_sig', sig);
-      }
-      // Which files the page uses, so a file can be shared by several pages and survive them.
-      const used = fileIdsIn(this.document.getXmlFragment(FRAGMENT).toString());
-      const refsSig = used.join(',');
-      if (this.getKv('refs_sig') !== refsSig) {
-        await syncFileRefs(this.env, this.name, used).then(() => this.setKv('refs_sig', refsSig), (err) => console.error('file refs failed', err));
-      }
     }
+    await this.reindex(force);
 
     // Automatic history: at most every 10 minutes, and only if something changed.
     const last = Number(this.getKv('last_snapshot_at') ?? 0);
@@ -126,12 +221,58 @@ export class PageRoom extends YServer<Env> {
     }
   }
 
+  /**
+   * Mirrors title, icon, search text and file references into D1. Each of those writes several rows
+   * (the search index is FTS5), so body edits are folded together: at most one refresh per INDEX_EVERY
+   * while people keep typing, the rest by an alarm, and the final one when the last person leaves.
+   * A new title or icon is written straight away so the sidebar follows renames.
+   */
+  private async reindex(force: boolean): Promise<void> {
+    const title = this.title();
+    const icon = String(this.document.getMap('meta').get('icon') ?? '').slice(0, 16);
+    const body = fragmentText(this.document.getXmlFragment(FRAGMENT));
+    const headSig = hashText(`${title}\u0000${icon}`);
+    const sig = hashText(`${headSig}\u0000${body}`);
+    const used = fileIdsIn(this.document.getXmlFragment(FRAGMENT).toString());
+    const refsSig = used.join(',');
+    const indexChanged = this.getKv('indexed_sig') !== sig;
+    const refsChanged = this.getKv('refs_sig') !== refsSig;
+    if (!indexChanged && !refsChanged) return;
+
+    const since = Date.now() - Number(this.getKv('indexed_at') ?? 0);
+    const renamed = this.getKv('head_sig') !== headSig;
+    if (!force && !renamed && since < INDEX_EVERY) {
+      if ((await this.ctx.storage.getAlarm()) === null) await this.ctx.storage.setAlarm(Date.now() + (INDEX_EVERY - since));
+      return;
+    }
+    if (indexChanged) {
+      await this.env.DB.batch([
+        this.env.DB.prepare('UPDATE pages SET title = ?, icon = ?, updated_at = ? WHERE id = ?').bind(title, icon, Date.now(), this.name),
+        this.env.DB.prepare('DELETE FROM pages_fts WHERE page_id = ?').bind(this.name),
+        this.env.DB.prepare(
+          'INSERT INTO pages_fts (page_id, project_id, title, body) SELECT id, project_id, ?, ? FROM pages WHERE id = ?'
+        ).bind(title, body, this.name),
+      ]);
+      this.setKv('indexed_sig', sig);
+      this.setKv('head_sig', headSig);
+      this.setKv('indexed_at', String(Date.now()));
+    }
+    // Which files the page uses, so a file can be shared by several pages and survive them.
+    if (refsChanged) {
+      await syncFileRefs(this.env, this.name, used).then(() => this.setKv('refs_sig', refsSig), (err) => console.error('file refs failed', err));
+    }
+  }
+
   private title(): string {
     return String(this.document.getMap('meta').get('title') ?? '');
   }
 
+  /** A short fingerprint of what the document holds (its state vector can be large, and spreading it into one call overflows the stack). */
   private stateVector(): string {
-    return btoa(String.fromCharCode(...Y.encodeStateVector(this.document)));
+    const sv = Y.encodeStateVector(this.document);
+    let text = '';
+    for (let i = 0; i < sv.length; i += 0x2000) text += String.fromCharCode(...sv.subarray(i, i + 0x2000));
+    return hashText(text);
   }
 
   /**
@@ -192,7 +333,9 @@ export class PageRoom extends YServer<Env> {
    * checks (the Worker owns all routing to this class):
    *   POST /snapshot      save a manual version        { by, userId }
    *   POST /restore       restore a saved version       { versionId, by, userId }
-   *   POST /notify        tell open pages to refresh    { type }
+   *   POST /notify        tell open pages to refresh    { type, from? }
+   *   GET  /export        the document as Yjs bytes (workspace backup)
+   *   PUT  /load          merge Yjs bytes into the document (workspace import)
    *   DELETE /            wipe the page
    */
   async onRequest(request: Request): Promise<Response> {
@@ -201,7 +344,30 @@ export class PageRoom extends YServer<Env> {
     try {
       if (request.method === 'DELETE') {
         for (const conn of this.getConnections()) conn.close(4404, 'page deleted');
+        await this.ctx.storage.deleteAlarm();
         await this.ctx.storage.deleteAll();
+        return new Response(null, { status: 204 });
+      }
+      // Workspace backups: the page's current document as Yjs bytes, and the way back in.
+      if (request.method === 'GET' && path === '/export') {
+        return new Response(Y.encodeStateAsUpdate(this.document) as Uint8Array<ArrayBuffer>, { headers: { 'content-type': 'application/octet-stream' } });
+      }
+      if (request.method === 'PUT' && path === '/load') {
+        const bytes = new Uint8Array(await request.arrayBuffer());
+        if (bytes.byteLength > MAX_STATE_BYTES) throw new HttpError(413, 'page is too large to import');
+        // An import (`wid` = the new workspace) gets this page's file links and own id pointed at their new ids.
+        const url = new URL(request.url);
+        const wid = url.searchParams.get('wid');
+        const old = url.searchParams.get('old');
+        if (wid && old) {
+          const scratch = new Y.Doc();
+          Y.applyUpdate(scratch, bytes);
+          const map = new Map<string, string>();
+          for (const id of fileIdsInText(scratch.getXmlFragment(FRAGMENT).toString())) map.set(id, await deriveId(wid, id));
+          rewriteDocument(scratch, FRAGMENT, map, old, this.name);
+          Y.applyUpdate(this.document, Y.encodeStateAsUpdate(scratch));
+        } else Y.applyUpdate(this.document, bytes);
+        await this.persist(true);
         return new Response(null, { status: 204 });
       }
       const body = (await request.json().catch(() => ({}))) as {
@@ -209,6 +375,7 @@ export class PageRoom extends YServer<Env> {
         userId?: string;
         versionId?: string;
         type?: string;
+        from?: string;
       };
       if (request.method === 'POST' && path === '/snapshot') {
         return json(await this.snapshot('manual', body.by ?? null, body.userId ?? null), 201);
@@ -227,11 +394,12 @@ export class PageRoom extends YServer<Env> {
         await this.snapshot('before-restore', body.by ?? null, body.userId ?? null);
         // Applied as ordinary edits, so everyone on the page sees the restore live.
         this.unstable_replaceDocument(snapshot, (key) => (key === FRAGMENT ? 'XmlFragment' : 'Map'));
-        await this.onSave();
+        await this.persist(true);
         return new Response(null, { status: 204 });
       }
       if (request.method === 'POST' && path === '/notify') {
-        this.broadcastCustomMessage(JSON.stringify({ type: body.type ?? 'refresh' }));
+        // `from` is the browser tab that made the change: it already has the result and skips the refresh.
+        this.broadcastCustomMessage(JSON.stringify({ type: body.type ?? 'refresh', ...(body.from ? { from: body.from } : {}) }));
         return new Response(null, { status: 204 });
       }
       return new Response('Not Found', { status: 404 });

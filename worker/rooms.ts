@@ -15,3 +15,17 @@ export async function tellRoom(env: Env, pageId: string, path: string, body: unk
     })
   );
 }
+
+/** The page's document as Yjs bytes (for workspace backups). */
+export async function exportRoom(env: Env, pageId: string): Promise<Uint8Array<ArrayBuffer>> {
+  const res = await (await room(env, pageId)).fetch(new Request('http://room/export'));
+  if (!res.ok) throw new Error(`room export failed (${res.status})`);
+  return new Uint8Array(await res.arrayBuffer());
+}
+
+/** Fills a (new) page's room with Yjs bytes from a backup. */
+export async function loadRoom(env: Env, pageId: string, state: Uint8Array, from?: { workspaceId: string; oldPageId: string }): Promise<void> {
+  const q = from ? `?wid=${from.workspaceId}&old=${encodeURIComponent(from.oldPageId)}` : '';
+  const res = await (await room(env, pageId)).fetch(new Request(`http://room/load${q}`, { method: 'PUT', body: state as Uint8Array<ArrayBuffer> }));
+  if (!res.ok) throw new Error(`room import failed (${res.status})`);
+}
