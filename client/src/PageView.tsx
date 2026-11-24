@@ -215,6 +215,8 @@ export function PageView({ pageId, me, dark, leading, trailing, linkFor, onTitle
     { key: 'history', icon: <IconHistory size={18} />, show: !info.viaShare },
   ];
   const canShare = !!me && !info.viaShare && atLeast(info.role, 'editor');
+  // Someone reading through a share link with nothing to comment on or edit: no margin column, the page takes the whole window.
+  const reviewOnly = info.viaShare && !atLeast(info.role, 'commenter');
 
   const fileName = (title || 'Untitled').replace(/[\\/:*?"<>|]+/g, ' ').trim() || 'page';
   const exportAs = async (kind: 'md' | 'html' | 'print') => {
@@ -249,7 +251,7 @@ export function PageView({ pageId, me, dark, leading, trailing, linkFor, onTitle
     ) : null;
 
   return (
-    <div className={`page-layout${wide ? ' is-wide' : ''}`}>
+    <div className={`page-layout${wide ? ' is-wide' : ''}${reviewOnly ? ' review-only' : ''}`}>
       <div className="page-main">
         <Group justify="space-between" className="page-header" wrap="nowrap" gap="xs">
           <Group gap={6} wrap="nowrap" style={{ minWidth: 0, flex: 1 }}>

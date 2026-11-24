@@ -539,6 +539,12 @@ button.page-icon:hover { background: var(--hover); }
 .bn-side-menu .bn-button { border-radius: 8px; }
 .bn-side-menu .bn-button:hover { background: var(--hover); }
 .page .bn-block-outer { border-radius: 8px; }
-.page .bn-editor .bn-block-group > .bn-block-outer:hover > .bn-block > .bn-block-content { background: color-mix(in srgb, var(--accent) 3.5%, transparent); border-radius: 8px; transition: background .12s; }
+@media (hover: hover) { .page .bn-editor .bn-block-group > .bn-block-outer:hover > .bn-block > .bn-block-content { background: color-mix(in srgb, var(--accent) 3.5%, transparent); border-radius: 8px; transition: background .12s; } }
 .page .bn-visual-media { box-shadow: 0 1px 3px rgb(0 0 0 / 12%); }
 .page-bar .mantine-SegmentedControl-root { border-radius: 10px; }
+
+/* A shared page opened only to read: no column kept free for comments, and the page fills the window. */
+.review-only .right-col:not(.has-panel) { width: 0; }
+.review-only .page, .review-only.is-wide .page { max-width: none; }
+.review-only .title-row, .review-only .page-bar { padding-inline: clamp(16px, 4vw, 64px); }
+.review-only .page .bn-editor { padding-inline: clamp(16px, 4vw, 64px); }

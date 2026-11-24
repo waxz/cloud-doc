@@ -332,6 +332,12 @@ const opened = []; // pages, for a screenshot of each when something fails
   await visitor.waitForFunction(() => document.querySelector('style[data-block-layouts]')?.textContent.includes('span 6'), null, { timeout: 10000 });
   const theirs = await rows(visitor);
   assert.ok(Math.abs(theirs.first.y - theirs.second.y) < 4 && theirs.second.x > theirs.first.x + 100, 'a reader sees the columns live');
+  // a reader of a shared page gets no editing toolbar, and no column kept free for comments
+  await visitor.locator('.bn-editor').getByText('Two engineers in Q2.').first().click({ clickCount: 3 });
+  await visitor.waitForTimeout(600);
+  assert.equal(await visitor.locator('.bn-formatting-toolbar').count(), 0, 'a reader gets no editing toolbar');
+  assert.equal(await visitor.locator('.right-col').evaluate((e) => e.getBoundingClientRect().width), 0, 'no right column is kept free on a read-only share');
+  assert.ok(await visitor.evaluate(() => document.querySelector('.page').getBoundingClientRect().width >= innerWidth - 2), 'the page fills the window');
   // drag the gap to make the first column wider
   await alice.locator('.page-layout').hover();
   const gap = alice.locator('.column-handle').first();
@@ -384,7 +390,16 @@ const opened = []; // pages, for a screenshot of each when something fails
   const bar = await phone.locator('.bn-formatting-toolbar').boundingBox();
   assert.ok(bar.x >= 0 && bar.x + bar.width <= 391, 'the formatting toolbar stays on the screen');
   assert.ok(await phone.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), 'selecting text does not widen the page');
-  console.log('✓ phone: drawer navigation, page with media, panels as bottom sheets, fields 16px, toolbar fits');
+  // columns can be made and undone on a phone too: they stack, with a bar marking the group
+  await phone.locator('[data-test^="columns"]').click();
+  await phone.getByRole('button', { name: 'Beside the block below' }).click();
+  await phone.waitForFunction(() => [...document.querySelectorAll('.page .bn-editor > .bn-block-group > .bn-block-outer')].some((o) => getComputedStyle(o).borderLeftWidth === '3px'));
+  assert.ok(await phone.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), 'columns do not widen the phone page');
+  await phone.locator('.bn-editor').getByText('Ship the beta in March.').first().click({ clickCount: 3 }); // moving a block drops the selection
+  await phone.locator('[data-test^="columns"]').click();
+  await phone.getByRole('button', { name: 'Full width again' }).click();
+  await phone.waitForFunction(() => ![...document.querySelectorAll('.page .bn-editor > .bn-block-group > .bn-block-outer')].some((o) => getComputedStyle(o).borderLeftWidth === '3px'));
+  console.log('✓ phone: drawer navigation, page with media, panels as bottom sheets, fields 16px, toolbar fits, columns editable');
 
   console.log('errors:', errors);
   assert.equal(errors.length, 0);
