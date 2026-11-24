@@ -13,14 +13,15 @@ import {
   useComponentsContext,
   useCreateBlockNote,
 } from '@blocknote/react';
-import { ActionIcon, Avatar, Button, Group, Loader, Popover, SegmentedControl, SimpleGrid, Stack, Text, Tooltip, UnstyledButton } from '@mantine/core';
+import { ActionIcon, Avatar, Button, Checkbox, Group, Loader, Popover, SegmentedControl, SimpleGrid, Stack, Text, Tooltip, UnstyledButton } from '@mantine/core';
 import { IconFileTypePdf, IconMessagePlus, IconMoodSmile } from '@tabler/icons-react';
+import { useMediaQuery } from '@mantine/hooks';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
 import { api, TAB_ID, type Comment } from './api';
 import { attachLiveMode } from './liveMode';
-import { IconArticle, IconFloatCenter, IconFloatLeft, IconFloatNone, IconFloatRight } from '@tabler/icons-react';
+import { IconArticle, IconLayout2 } from '@tabler/icons-react';
 import { COMMENT_COLORS, HIGHLIGHT_SHAPES, PageContext, type HighlightShape, schema, type Schema } from './blocks';
 import { errorText, highlightPositions, takeFind } from './util';
 
@@ -393,6 +394,21 @@ export function PageEditor({ pageId, me, canEdit, canComment, dark, onTitle, onI
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // The page's block layouts become a stylesheet that follows the shared document, so everyone sees the same arrangement.
+  useEffect(() => {
+    const layouts = doc.getMap<string>('layouts');
+    const style = document.createElement('style');
+    style.setAttribute('data-block-layouts', pageId);
+    document.head.appendChild(style);
+    const apply = () => { style.textContent = layoutCss(layouts); };
+    layouts.observe(apply);
+    apply();
+    return () => {
+      layouts.unobserve(apply);
+      style.remove();
+    };
+  }, [doc, pageId]);
+
   const editor = useCreateBlockNote(
     withCollaboration({
       schema,
@@ -502,14 +518,15 @@ export function PageEditor({ pageId, me, canEdit, canComment, dark, onTitle, onI
     () => (
       <FormattingToolbar>
         {...getFormattingToolbarItems()}
-        <ImageLayoutButtons key="layout" />
+        <ImageSizeButtons key="size" />
+        <BlockLayoutButton key="layout" doc={doc} />
         {hasComment && <CommentButton key="comment" onClick={() => {
           const text = editor.getSelectedText();
           if (text) commentRef.current?.(text, undefined, 'yellow', 'highlight');
         }} />}
       </FormattingToolbar>
     ),
-    [editor, hasComment]
+    [editor, hasComment, doc]
   );
 
   const members = useMemo(() => {
@@ -1140,35 +1157,151 @@ export function PageEditor({ pageId, me, canEdit, canComment, dark, onTitle, onI
   );
 }
 
-/** For a selected picture or video: float it left or right with the text wrapping around it, centre it, or give it the full width. */
-function ImageLayoutButtons() {
+/** For a selected picture or video: its width, as presets (dragging its edges still works for anything in between). */
+function ImageSizeButtons() {
   const Components = useComponentsContext()!;
   const editor = useBlockNoteEditor<any, any, any>();
   const blocks = useSelectedBlocks(editor);
   const block = blocks.length === 1 ? blocks[0] : undefined;
   if (!block || (block.type !== 'image' && block.type !== 'video')) return null;
-  const current = (block.props as { textAlignment?: string }).textAlignment ?? 'left';
-  // Stored in the picture's alignment (see the stylesheet): "right" floats right, "justify" floats left.
-  const options = [
-    { value: 'left', label: 'In line', icon: <IconFloatNone size={18} /> },
-    { value: 'center', label: 'Centred', icon: <IconFloatCenter size={18} /> },
-    { value: 'justify', label: 'Float left', icon: <IconFloatLeft size={18} /> },
-    { value: 'right', label: 'Float right', icon: <IconFloatRight size={18} /> },
+  const width = Number((block.props as { previewWidth?: number }).previewWidth) || 512;
+  const sizes = [
+    { label: 'Small', text: 'S', px: 240 },
+    { label: 'Medium', text: 'M', px: 400 },
+    { label: 'Large', text: 'L', px: 640 },
+    // wider than any column: the picture then fills the width it is given
+    { label: 'Full width', text: 'XL', px: 4000 },
   ];
+  const nearest = sizes.reduce((best, o) => (Math.abs(o.px - width) < Math.abs(best.px - width) ? o : best));
   return (
     <>
-      {options.map((o) => (
+      {sizes.map((o) => (
         <Components.FormattingToolbar.Button
-          key={o.value}
+          key={o.label}
           className="bn-button"
-          label={o.label}
-          mainTooltip={o.label}
-          icon={o.icon}
-          isSelected={current === o.value}
-          onClick={() => editor.updateBlock(block, { props: { textAlignment: o.value } } as any)}
+          label={`${o.label} picture`}
+          mainTooltip={`${o.label}${o.px < 4000 ? ` (${o.px}px)` : ''}`}
+          icon={<span style={{ fontSize: 12, fontWeight: 700, width: 18, textAlign: 'center' }}>{o.text}</span>}
+          isSelected={nearest === o}
+          onClick={() => editor.updateBlock(block, { props: { previewWidth: o.px } } as any)}
         />
       ))}
     </>
+  );
+}
+
+/**
+ * Where a block sits, for any kind of block: in the flow, floated left or right with the text wrapping round it, or
+ * centred; how wide it is; and whether it starts on a new line. Kept in the document next to the text, by block id
+ * (not inside the blocks), so it works for text, pictures, tables, PDFs and the rest and never changes pages that
+ * don't use it. Two neighbouring blocks floated left at 48% make two columns.
+ */
+interface BlockLayout {
+  /** position */
+  p?: 'left' | 'right' | 'center';
+  /** width, percent of the page column */
+  w?: number;
+  /** start below anything floated before it */
+  c?: boolean;
+}
+
+const parseLayout = (raw: string | undefined): BlockLayout => {
+  try {
+    const v = JSON.parse(raw ?? '{}') as BlockLayout;
+    return { p: v.p === 'left' || v.p === 'right' || v.p === 'center' ? v.p : undefined, w: typeof v.w === 'number' && v.w >= 10 && v.w <= 100 ? Math.round(v.w) : undefined, c: v.c === true };
+  } catch {
+    return {};
+  }
+};
+
+/** The stylesheet for a page's block layouts. Wide screens only: on a phone every block takes the full width. */
+export function layoutCss(layouts: Y.Map<string>): string {
+  const rules: string[] = [];
+  layouts.forEach((raw, id) => {
+    if (!/^[\w-]{1,80}$/.test(id)) return;
+    const l = parseLayout(raw);
+    const width = l.w ?? (l.p === 'left' || l.p === 'right' ? 42 : l.p === 'center' ? 60 : undefined);
+    const d: string[] = [];
+    if (l.p === 'left') d.push('float:left', 'margin:4px 24px 12px 0');
+    else if (l.p === 'right') d.push('float:right', 'margin:4px 0 12px 24px');
+    else if (l.p === 'center') d.push('margin-left:auto', 'margin-right:auto');
+    if (width && width < 100) d.push(`width:${width}%`);
+    if (l.c) d.push('clear:both');
+    if (d.length) rules.push(`.page .bn-block-outer[data-id="${id}"]{${d.join(';')}}`);
+  });
+  return rules.length ? `@media (min-width: 48.01em){${rules.join('')}}` : '';
+}
+
+function BlockLayoutButton({ doc }: { doc: Y.Doc }) {
+  const Components = useComponentsContext()!;
+  const editor = useBlockNoteEditor<any, any, any>();
+  const blocks = useSelectedBlocks(editor);
+  const [open, setOpen] = useState(false);
+  const phone = useMediaQuery('(max-width: 48em)');
+  const block = blocks[0];
+  const layouts = doc.getMap<string>('layouts');
+  const [, bump] = useState(0);
+  useEffect(() => {
+    const on = () => bump((n) => n + 1);
+    layouts.observe(on);
+    return () => layouts.unobserve(on);
+  }, [layouts]);
+  // Phones show every block at full width, so there is nothing to arrange there.
+  if (!block || phone) return null;
+  const current = parseLayout(layouts.get(block.id));
+  const save = (next: BlockLayout) => {
+    const clean: BlockLayout = {};
+    if (next.p) clean.p = next.p;
+    if (next.w && next.w < 100) clean.w = next.w;
+    if (next.c) clean.c = true;
+    if (Object.keys(clean).length) layouts.set(block.id, JSON.stringify(clean));
+    else layouts.delete(block.id);
+  };
+  const widths = ['auto', '25', '33', '50', '66', '75', '100'];
+  return (
+    <Popover opened={open} onChange={setOpen} position="bottom" shadow="md" withinPortal={false} floatingStrategy={phone ? 'fixed' : 'absolute'} trapFocus={false} closeOnClickOutside={false}>
+      <Popover.Target>
+        <div>
+          <Components.FormattingToolbar.Button
+            className="bn-button"
+            label="Block layout"
+            mainTooltip="Block layout: position and width"
+            icon={<IconLayout2 size={18} />}
+            isSelected={open || Object.keys(current).length > 0}
+            onClick={() => setOpen((o) => !o)}
+          />
+        </div>
+      </Popover.Target>
+      {/* A mouse press must not move focus out of the editor, or the selection (and this toolbar) would go. */}
+      <Popover.Dropdown w={320} onMouseDown={(e) => e.preventDefault()}>
+        <Stack gap="xs">
+          <Text size="sm" fw={600}>Block layout</Text>
+          <Text size="xs" c="dimmed">Position</Text>
+          <SegmentedControl
+            size="xs"
+            fullWidth
+            aria-label="Position"
+            value={current.p ?? 'flow'}
+            onChange={(v) => save({ ...current, p: v === 'flow' ? undefined : (v as BlockLayout['p']) })}
+            data={[{ value: 'flow', label: 'In flow' }, { value: 'left', label: 'Float left' }, { value: 'center', label: 'Centre' }, { value: 'right', label: 'Float right' }]}
+          />
+          <Text size="xs" c="dimmed">Width</Text>
+          <SegmentedControl
+            size="xs"
+            fullWidth
+            aria-label="Width"
+            value={current.w ? String(current.w) : 'auto'}
+            onChange={(v) => save({ ...current, w: v === 'auto' ? undefined : Number(v) })}
+            data={widths.map((w) => ({ value: w, label: w === 'auto' ? 'Auto' : `${w}%` }))}
+          />
+          <Checkbox size="xs" label="Start on a new line" checked={!!current.c} onChange={(e) => save({ ...current, c: e.currentTarget.checked })} />
+          <Group justify="space-between">
+            <Text size="xs" c="dimmed" style={{ flex: 1 }}>Floated blocks let the text wrap round them. Two blocks floated left at 48% sit side by side.</Text>
+            <Button size="compact-xs" variant="subtle" onClick={() => save({})} disabled={!Object.keys(current).length}>Reset</Button>
+          </Group>
+        </Stack>
+      </Popover.Dropdown>
+    </Popover>
   );
 }
 

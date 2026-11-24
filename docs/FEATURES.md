@@ -96,7 +96,9 @@ Fields are 16px on touch screens so Safari doesn't zoom in when they get focus, 
 
 ## Page layout, like an article
 
-Editors get a **Page layout** button above the page: *Article* sets the page in a serif reading layout (roomy lines, clear links), stored with the page so everyone sees it. Select a picture or video to **float it left or right** so the text wraps around it, centre it, or leave it in line; its caption sits beneath it. On a phone, floated pictures take the full width. (Floats ride on the picture's alignment, so pages that never used them look exactly as before.)
+- **Article** (the *Page layout* button above the page, for editors) sets the page in a serif reading layout with roomy lines and clear links. It is saved with the page, so everyone sees it.
+- **Block layout** (the layout button in the toolbar when you select text, a picture or any block) sets where that block sits: in the flow, **floated left or right** with the text wrapping round it, or centred; its **width** (25–100% of the column); and whether it **starts on a new line**. Two neighbouring blocks floated left at 48% make two columns. It works for every kind of block, is stored in the page by block id (so pages that never use it are untouched), and everyone sees it live. Phones always show blocks at full width.
+- **Picture size**: with a picture or video selected, **S / M / L / XL** set its width (240 px, 400 px, 640 px, the full width). Dragging its edges still gives any size in between.
 
 ## The explorer
 
