@@ -85,6 +85,27 @@ export class WebDav {
     if (!res.ok && res.status !== 404) throw new HttpError(502, `storage delete failed (${res.status})`);
   }
 
+  /** Names of the folders directly inside `key` (empty when it doesn't exist). */
+  async listFolders(key: string): Promise<string[]> {
+    const res = await this.request('PROPFIND', key, { headers: { depth: '1' } });
+    if (res.status === 404) return [];
+    if (res.status !== 207) throw new HttpError(502, `storage could not list its folders (${res.status})`);
+    const xml = (await res.text()).slice(0, 2_000_000);
+    const names: string[] = [];
+    for (const m of xml.matchAll(/<(?:\w+:)?href>([^<]+)<\/(?:\w+:)?href>/gi)) {
+      let path = m[1]!;
+      try {
+        path = decodeURIComponent(path);
+      } catch {
+        continue;
+      }
+      if (!path.endsWith('/')) continue; // a file, not a folder
+      const name = path.replace(/\/+$/, '').split('/').pop() ?? '';
+      if (name && name !== key.replace(/\/+$/, '').split('/').pop()) names.push(name);
+    }
+    return [...new Set(names)];
+  }
+
   /** Checks the folder is reachable and the credentials work. */
   async check(): Promise<{ ok: boolean; message: string }> {
     const res = await this.request('PROPFIND', '', { headers: { depth: '0' } }).catch((e: Error) => e);

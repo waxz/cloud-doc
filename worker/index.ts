@@ -4,6 +4,7 @@ import { authStatus, currentUser, getMe, login, logout, registrationInfo, signup
 import type { Env } from './env.js';
 import { HttpError, json } from './http.js';
 import { ensureSchema } from './migrate.js';
+import * as backup from './backup.js';
 import * as files from './files.js';
 import * as pages from './pages.js';
 import * as settings from './settings.js';
@@ -69,6 +70,10 @@ route('GET', '/api/workspaces/:w/storages', (r, e, u, [w]) => ws.listWorkspaceSt
 route('PUT', '/api/workspaces/:w/storages', (r, e, u, [w]) => ws.setWorkspaceStorages(r, e, u, w!));
 route('PUT', '/api/workspaces/:w/storages/:s', (r, e, u, [w, s]) => ws.bindWorkspaceStorage(r, e, u, w!, s!));
 route('DELETE', '/api/workspaces/:w/storages/:s', (r, e, u, [w, s]) => ws.unbindWorkspaceStorage(e, u, w!, s!));
+route('POST', '/api/workspaces/:w/migrate', (r, e, u, [w]) => backup.migrateStep(r, e, u, w!));
+route('POST', '/api/workspaces/:w/backup', (r, e, u, [w]) => backup.backupStep(r, e, u, w!));
+route('GET', '/api/storages/:s/backups', (r, e, u, [s]) => backup.listBackups(e, u, s!));
+route('POST', '/api/import', (r, e, u) => backup.importStep(r, e, u));
 route('GET', '/api/workspaces/:w/projects', (r, e, u, [w]) => ws.listProjects(e, u, w!));
 route('GET', '/api/workspaces/:w/tree', (r, e, u, [w]) => ws.listWorkspacePages(e, u, w!));
 route('POST', '/api/workspaces/:w/projects', (r, e, u, [w]) => ws.createProject(r, e, u, w!));
@@ -97,6 +102,7 @@ route('POST', '/api/pages/:id/versions/:v/restore', (r, e, u, [id, v]) => pages.
 route('GET', '/api/pages/:id/comments', (r, e, u, [id]) => pages.listComments(r, e, u, id!));
 route('POST', '/api/pages/:id/comments', (r, e, u, [id]) => pages.addComment(r, e, u, id!));
 route('GET', '/api/pages/:id/comment-members', (r, e, u, [id]) => pages.listCommentMembers(r, e, u, id!));
+route('PATCH', '/api/pages/:id/anchors', (r, e, u, [id]) => pages.updateAnchors(r, e, u, id!));
 route('PATCH', '/api/comments/:c', (r, e, u, [c]) => pages.updateComment(r, e, u, c!));
 route('DELETE', '/api/comments/:c', (r, e, u, [c]) => pages.deleteComment(r, e, u, c!));
 route('GET', '/api/inbox', (r, e, u) => pages.inbox(e, u));

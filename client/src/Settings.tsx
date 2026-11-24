@@ -14,6 +14,7 @@ import {
   type WorkspaceStorageInfo,
 } from './api';
 import { errorText } from './util';
+import { WorkspaceBackup } from './WorkspaceBackup';
 
 interface WorkspaceProps {
   workspace: Workspace;
@@ -197,6 +198,7 @@ export function WorkspaceSettings({ workspace, me, opened, onClose, onChanged, o
             ))}
           </Table.Tbody>
         </Table>
+        {isOwner && <WorkspaceBackup workspace={workspace} onChanged={() => { void load(); onChanged(); }} onError={onError} />}
         {isOwner && (
           <>
             <Divider />

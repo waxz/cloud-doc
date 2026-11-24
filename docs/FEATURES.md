@@ -75,3 +75,13 @@ Every rule is checked on the server. Through a share link, signed-out visitors o
 - **Accounts.** The first account created on a new install is the instance admin. After that, sign-up is closed: the admin creates accounts directly, or sends registration links (optionally tied to an email, with a role and an expiry; each works once). A link can also put the new account into a workspace and give it a shared storage with a limit, so the person can start working right after signing up. Admins set each user's role and whether they may create workspaces, and can disable or delete accounts.
 - **Usage.** *Admin → Usage* shows, per user, what they store, their use of any shared storage against their limit, requests over 24 h / 7 d / 30 d, the request rate, errors and traffic, plus an hourly chart and the share of the Free plan's daily quota.
 
+
+## Free-plan economy
+
+- **Live vs quiet collaboration.** With two or more people able to edit a page, cursors and edits are live. With one writer, or only readers, cursors are not sent and edits are batched (about a second), which cuts the messages Cloudflare bills.
+- **Event-driven comments.** A new comment, reply, resolve or delete tells everyone on the page, and highlights and the Discussion panel reload together from a single request.
+- **Quiet housekeeping.** Search text and file references are refreshed at most once a minute while a page is open; the sidebar polls slowly, and not at all for a workspace of one.
+
+## Move, back up, restore a workspace
+
+In *Workspace settings* (owner): move all files and history to another storage, save a full backup to one of your storages, or restore a backup as a new workspace (also from another instance, by adding its storage). See the [audit](AUDIT.md) for the format.

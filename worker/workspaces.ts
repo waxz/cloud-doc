@@ -270,7 +270,9 @@ export async function listWorkspacePages(env: Env, u: User | null, wid: string):
       .all<{ project_id: string }>();
     for (const page of results) pagesByProject[page.project_id]?.push(page);
   }
-  return json({ projects, pages: pagesByProject });
+  // Whether anyone else could be changing the tree: a workspace of one has nothing to poll for.
+  const people = await env.DB.prepare('SELECT COUNT(*) AS n FROM workspace_members WHERE workspace_id = ?').bind(wid).first<{ n: number }>();
+  return json({ projects, pages: pagesByProject, members: people?.n ?? 1 });
 }
 
 const parseDefaultRole = (v: unknown): Role | null => {

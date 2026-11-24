@@ -160,7 +160,11 @@ export function PageView({ pageId, me, dark, leading, linkFor, onTitle, onIcon, 
   const flushKinds = useMemo(() => debounced(() => {
     const kinds = [...pendingKinds.current];
     pendingKinds.current.clear();
-    if (kinds.includes('comments')) api.invalidateComments();
+    if (kinds.includes('comments')) {
+      api.invalidateComments();
+      // The page's own highlights, the panels and an open thread all reload from one shared request.
+      window.dispatchEvent(new CustomEvent('cloud-doc-comments-changed'));
+    }
     setKeys((k) => {
       const next = { ...k };
       for (const kind of kinds as ('comments' | 'history' | 'files')[]) next[kind] = k[kind] + 1;

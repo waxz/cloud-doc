@@ -289,10 +289,13 @@ export class ApiError extends Error {
   }
 }
 
+/** Names this browser tab, so a live notice about a change can skip the tab that made it. */
+export const TAB_ID = typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : String(Math.random()).slice(2);
+
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
     method,
-    headers: body !== undefined ? { 'content-type': 'application/json' } : {},
+    headers: { 'x-tab-id': TAB_ID, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
@@ -321,7 +324,12 @@ function cachedGet<T>(key: string, ttl: number, load: () => Promise<T>): Promise
 const forget = (prefix: string) => {
   for (const key of shared.keys()) if (key.startsWith(prefix)) shared.delete(key);
 };
-const afterWrite = <T>(prefix: string, promise: Promise<T>) => promise.finally(() => forget(prefix));
+const afterWrite = <T>(prefix: string, promise: Promise<T>) =>
+  promise.finally(() => {
+    forget(prefix);
+    // Everything showing comments (the page's highlights, the panels, an open thread) reloads from one shared request.
+    if (prefix === 'comments:' && typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('cloud-doc-comments-changed'));
+  });
 
 export const api = {
   me: () => call<Me>('GET', '/api/me'),
@@ -349,7 +357,7 @@ export const api = {
     call<void>('PUT', `/api/workspaces/${wid}/storages`, { storageIds }),
   search: (wid: string, q: string) => call<SearchHit[]>('GET', `/api/workspaces/${wid}/search?q=${enc(q)}`),
 
-  tree: (wid: string) => call<{ projects: Project[]; pages: Record<string, Page[]> }>('GET', `/api/workspaces/${wid}/tree`),
+  tree: (wid: string) => call<{ projects: Project[]; pages: Record<string, Page[]>; members: number }>('GET', `/api/workspaces/${wid}/tree`),
   projects: (wid: string) => call<Project[]>('GET', `/api/workspaces/${wid}/projects`),
   createProject: (wid: string, name: string, defaultRole: Role | null) =>
     call<Project>('POST', `/api/workspaces/${wid}/projects`, { name, defaultRole }),
@@ -395,8 +403,9 @@ export const api = {
   } = {}) =>
     afterWrite('comments:', call<Comment>('POST', `/api/pages/${id}/comments`, { body, ...opts })),
   editComment: (cid: string, body: string) => afterWrite('comments:', call<void>('PATCH', `/api/comments/${cid}`, { body })),
-  updateCommentAnchor: (cid: string, quoteStart: number, quoteEnd: number, quote?: string) =>
-    call<void>('PATCH', `/api/comments/${cid}`, { quoteStart, quoteEnd, ...(quote !== undefined ? { quote } : {}) }),
+  /** Where highlights now sit after an edit, many in one request (the server answers quietly, with no live notice). */
+  updateAnchors: (pageId: string, anchors: { id: string; start: number; end: number; quote?: string }[]) =>
+    call<void>('PATCH', `/api/pages/${pageId}/anchors`, { anchors }),
   setCommentVisibility: (cid: string, visibility: 'public' | 'mentioned', mentionIds: string[] = []) => afterWrite('comments:', call<void>('PATCH', `/api/comments/${cid}`, { visibility, mentionIds })),
   setCommentStyle: (cid: string, style: { quoteColor?: string; quoteShape?: string }) => afterWrite('comments:', call<void>('PATCH', `/api/comments/${cid}`, style)),
   resolveComment: (cid: string, resolved: boolean) => afterWrite('comments:', call<void>('PATCH', `/api/comments/${cid}`, { resolved })),
@@ -428,6 +437,14 @@ export const api = {
   setDefaultStorage: (uid: string, storageId: string | null) => call<void>('PUT', `/api/users/${uid}/default-storage`, { storageId }),
   setWorkspaceStorage: (uid: string, wid: string, storageId: string | null) =>
     call<void>('PUT', `/api/users/${uid}/workspaces/${wid}/storage`, { storageId }),
+
+  migrateStep: (wid: string, body: { toStorageId: string; removeOld: boolean; start: boolean; skip: string[] }) =>
+    call<{ moved: number; failed: { id: string; error: string }[]; remaining: number; done: boolean }>('POST', `/api/workspaces/${wid}/migrate`, body),
+  backupStep: (wid: string, body: { storageId: string; folder?: string; state?: unknown }) =>
+    call<{ folder: string; state: unknown; done: boolean; totals?: Record<string, number>; skipped?: { kind: string; id: string; name: string; reason: string }[] }>('POST', `/api/workspaces/${wid}/backup`, body),
+  backups: (sid: string) => call<{ folder: string; complete: boolean; name?: string; exportedAt?: number; counts?: Record<string, number> }[]>('GET', `/api/storages/${sid}/backups`),
+  importStep: (body: { storageId: string; folder: string; targetStorageId: string; name?: string; restoreMembers?: boolean; state?: unknown }) =>
+    call<{ state: { workspaceId: string; failed: { kind: string; id: string; error: string }[] }; done: boolean; totals?: Record<string, number>; workspace?: { id: string; name: string } }>('POST', '/api/import', body),
 
   adminStats: () => call<AdminStats>('GET', '/api/admin/stats'),
   adminUsers: () => call<AdminUser[]>('GET', '/api/admin/users'),

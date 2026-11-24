@@ -57,7 +57,15 @@ export function startWebDav({ port = 0, user = 'dav', pass = 'davpass' } = {}) {
       case 'PROPFIND':
         if (!dirs.has(dir) && !files.has(path)) return res.writeHead(404).end();
         res.writeHead(207, { 'content-type': 'application/xml' });
-        return res.end(`<?xml version="1.0"?><d:multistatus xmlns:d="DAV:"><d:response><d:href>${path}</d:href></d:response></d:multistatus>`);
+        {
+          // Depth 1 lists the folder's direct children too, like real servers.
+          const self = [`<d:response><d:href>${path}</d:href></d:response>`];
+          if (req.headers.depth === '1' && dirs.has(dir)) {
+            for (const d of dirs) if (d !== dir && d.startsWith(dir) && !d.slice(dir.length).replace(/\/$/, '').includes('/')) self.push(`<d:response><d:href>${d.endsWith('/') ? d : `${d}/`}</d:href></d:response>`);
+            for (const f of files.keys()) if (f.startsWith(dir) && !f.slice(dir.length).includes('/')) self.push(`<d:response><d:href>${f}</d:href></d:response>`);
+          }
+          return res.end(`<?xml version="1.0"?><d:multistatus xmlns:d="DAV:">${self.join('')}</d:multistatus>`);
+        }
       default:
         return res.writeHead(405).end();
     }

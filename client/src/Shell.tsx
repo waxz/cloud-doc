@@ -126,9 +126,11 @@ export function Shell({ me, workspace, pageId, commentId, dark, onMeChanged, onS
   // The whole tree comes in one request; state is only replaced when something changed, so a
   // poll that finds nothing new doesn't re-render the sidebar.
   const lastTree = useRef('');
+  const members = useRef(2);
   const refresh = useCallback(async () => {
     try {
       const tree = await api.tree(wid);
+      members.current = tree.members;
       const text = JSON.stringify(tree);
       if (text === lastTree.current) return;
       lastTree.current = text;
@@ -144,7 +146,13 @@ export function Shell({ me, workspace, pageId, commentId, dark, onMeChanged, onS
     // Other people's new pages and renames show up without a reload. Every refresh costs
     // one request per project, so poll slowly, only while the tab is visible, and never
     // twice within 30 s however often the window is focused.
-    return pollWhenVisible(refresh, 90_000, 30_000);
+    // On your own there is nobody else to hear from, so it only refreshes when you come back to the tab.
+    let last = Date.now();
+    return pollWhenVisible(() => {
+      if (members.current <= 1 && Date.now() - last < 15 * 60_000) return;
+      last = Date.now();
+      refresh();
+    }, 120_000, 45_000);
   }, [refresh]);
 
 
