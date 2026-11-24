@@ -304,6 +304,26 @@ const opened = []; // pages, for a screenshot of each when something fails
   await alice.getByRole('button', { name: 'Exit search' }).click();
   console.log('✓ explorer: projects fold, title search is local, workspace buttons on top, theme switch in the header');
 
+  // --- block layout: any block can be floated and sized; everyone sees it ---
+  await alice.locator('.bn-editor').getByText('Two engineers in Q2.').first().click({ clickCount: 3 });
+  await alice.locator('[data-test^="blocklayout"]').click();
+  await alice.getByText('Float left', { exact: true }).click();
+  await alice.getByText('50%', { exact: true }).click();
+  const placed = (page) => page.evaluate(() => {
+    const outer = [...document.querySelectorAll('.bn-block-outer')].find((o) => o.textContent.includes('Two engineers in Q2.'));
+    const column = outer.parentElement.getBoundingClientRect().width;
+    return { float: getComputedStyle(outer).float, share: Math.round((outer.getBoundingClientRect().width / column) * 100) };
+  });
+  const mine = await placed(alice);
+  assert.equal(mine.float, 'left', 'the block floats left');
+  assert.ok(mine.share >= 45 && mine.share <= 52, `and takes about half the column (got ${mine.share}%)`);
+  await visitor.waitForFunction(() => [...document.querySelectorAll('.bn-block-outer')].some((o) => o.textContent.includes('Two engineers in Q2.') && getComputedStyle(o).float === 'left'), null, { timeout: 10000 });
+  assert.equal((await placed(visitor)).float, 'left', "a reader sees the arrangement live, from the shared document");
+  await alice.locator('[data-test^="blocklayout"]').click().catch(() => {}); // reopen if the menu closed
+  await alice.getByRole('button', { name: 'Reset' }).click();
+  await alice.waitForFunction(() => ![...document.querySelectorAll('.bn-block-outer')].some((o) => o.textContent.includes('Two engineers in Q2.') && getComputedStyle(o).float !== 'none'));
+  console.log('✓ block layout: float and width for a text block, shared live, reset');
+
   // --- phone ---
   const phone = await ctx('phone', { ...devices['iPhone 13'] });
   await phone.goto(B);
