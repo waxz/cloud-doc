@@ -500,3 +500,40 @@ button.page-icon:hover { background: var(--hover); }
   .bn-formatting-toolbar::-webkit-scrollbar, .bn-link-toolbar::-webkit-scrollbar { display: none; }
   .bn-formatting-toolbar > *, .bn-link-toolbar > * { flex: none; }
 }
+
+/* ---- article layout: pictures that float with the text wrapping round them, and a serif reading style ----
+   BlockNote's image has no float setting, so two alignment values nobody used for pictures carry it: "right"
+   floats right and "justify" floats left. The default ("left") and "center" stay in the flow, so existing pages don't change. */
+.bn-block-outer:has(> .bn-block > .bn-block-content[data-content-type="image"][data-text-alignment="right"]),
+.bn-block-outer:has(> .bn-block > .bn-block-content[data-content-type="video"][data-text-alignment="right"]) { float: right; width: min(42%, 420px); margin: 4px 0 14px 28px; }
+.bn-block-outer:has(> .bn-block > .bn-block-content[data-content-type="image"][data-text-alignment="justify"]),
+.bn-block-outer:has(> .bn-block > .bn-block-content[data-content-type="video"][data-text-alignment="justify"]) { float: left; width: min(42%, 420px); margin: 4px 28px 14px 0; }
+.page .bn-block-outer:has(.bn-block-content[data-content-type="image"][data-text-alignment="justify"]) .bn-visual-media,
+.page .bn-block-outer:has(.bn-block-content[data-content-type="image"][data-text-alignment="right"]) .bn-visual-media { width: 100% !important; height: auto; border-radius: 10px; }
+.page .bn-block-content[data-content-type="image"][data-text-alignment="justify"] .bn-file-block-content-wrapper,
+.page .bn-block-content[data-content-type="image"][data-text-alignment="right"] .bn-file-block-content-wrapper,
+.page .bn-block-content[data-content-type="image"][data-text-alignment="justify"] .bn-visual-media-wrapper,
+.page .bn-block-content[data-content-type="image"][data-text-alignment="right"] .bn-visual-media-wrapper { width: 100%; max-width: 100%; }
+.page .bn-file-caption { color: var(--muted); line-height: 1.4; text-align: left; }
+.page .bn-editor::after { content: ''; display: block; clear: both; }
+@media (max-width: 48em) {
+  /* no room to wrap on a phone: pictures take the full width */
+  .bn-block-outer:has(> .bn-block > .bn-block-content[data-text-alignment="right"][data-content-type="image"]),
+  .bn-block-outer:has(> .bn-block > .bn-block-content[data-text-alignment="justify"][data-content-type="image"]),
+  .bn-block-outer:has(> .bn-block > .bn-block-content[data-text-alignment="right"][data-content-type="video"]),
+  .bn-block-outer:has(> .bn-block > .bn-block-content[data-text-alignment="justify"][data-content-type="video"]) { float: none; width: 100%; margin: 4px 0 12px; }
+}
+/* Article: a serif reading page with a narrower column, roomy lines and clear links. */
+.page.is-article { max-width: 920px; }
+.page.is-article .bn-container, .page.is-article .bn-editor { --bn-font-family: Georgia, 'Times New Roman', 'Noto Serif', serif; font-family: Georgia, 'Times New Roman', 'Noto Serif', serif; }
+.page.is-article .title { font-family: Georgia, 'Times New Roman', 'Noto Serif', serif; font-weight: 700; }
+.page.is-article .bn-block-content { font-size: 19px; line-height: 1.8; }
+.page.is-article .bn-block-content[data-content-type="heading"] { line-height: 1.3; }
+.page.is-article .bn-block-outer { margin-bottom: 4px; }
+.page.is-article .bn-inline-content a { color: #0b5cab; text-decoration: underline; text-underline-offset: 3px; }
+[data-mantine-color-scheme='dark'] .page.is-article .bn-inline-content a { color: #74b0ff; }
+.page.is-article .bn-file-caption { font-size: 14px; }
+@media (max-width: 48em) { .page.is-article .bn-block-content { font-size: 17px; line-height: 1.7; } }
+
+/* BlockNote's own alignment buttons say the same thing as the layout buttons when a picture is selected. */
+.bn-formatting-toolbar:has([data-test="floatright"]) [data-test^="alignText"] { display: none; }

@@ -131,8 +131,7 @@ const opened = []; // pages, for a screenshot of each when something fails
   await bob.getByRole('textbox', { name: 'Password' }).fill('correct horse battery');
   await btn(bob, 'Create account').click();
   // Registering doesn't join a workspace: Alice adds Bob, then his sidebar fills in.
-  await alice.locator('.ws-switch').click();
-  await alice.getByRole('menuitem', { name: 'Workspace settings' }).click();
+  await alice.getByRole('button', { name: 'Workspace settings' }).click();
   await alice.getByRole('combobox', { name: 'Add registered member' }).fill('Bob');
   await alice.getByRole('option', { name: new RegExp('Bob') }).click();
   await btn(alice, 'Add').click();
@@ -258,6 +257,52 @@ const opened = []; // pages, for a screenshot of each when something fails
   assert.equal(await btn(visitor, 'Share').count(), 0);
   assert.equal(await visitor.getByRole('button', { name: 'History' }).count(), 0, 'no history through a link');
   console.log('✓ private project hidden; public link is read-only');
+
+  // --- explorer: fold a project, search titles, workspace buttons on top, dark mode in the page header ---
+  await alice.goto(alice.url()); // a fresh load of the page Alice is on
+  await nav(alice).getByText('Hiring plan').first().waitFor();
+  const order = await alice.evaluate(() => {
+    const y = (sel) => document.querySelector(sel)?.getBoundingClientRect().top ?? -1;
+    return { settings: y('button[aria-label="Workspace settings"]'), files: y('button[aria-label="Workspace files"]'), search: y('input[placeholder^="Search pages"]'), tree: y('.tree-row') };
+  });
+  assert.ok(order.settings > 0 && order.settings < order.search && order.files < order.search && order.search < order.tree, 'workspace settings and files sit above the search and the tree');
+  await alice.locator('.me-button').click();
+  assert.equal(await alice.getByRole('menuitem', { name: /Dark mode|Light mode/ }).count(), 0, 'no dark mode in the account menu');
+  assert.equal(await alice.getByRole('menuitem', { name: 'Storage', exact: true }).count(), 0, 'storage lives inside Settings');
+  await alice.keyboard.press('Escape');
+  const schemeBefore = await alice.evaluate(() => document.documentElement.getAttribute('data-mantine-color-scheme'));
+  await alice.getByRole('button', { name: /^(Dark|Light) mode$/ }).first().click();
+  assert.notEqual(await alice.evaluate(() => document.documentElement.getAttribute('data-mantine-color-scheme')), schemeBefore, 'the switch in the page header changes the theme');
+  await alice.getByRole('button', { name: /^(Dark|Light) mode$/ }).first().click();
+  // fold a project: its pages go, its name and count stay
+  await alice.getByRole('button', { name: 'Collapse Leadership' }).click();
+  assert.equal(await nav(alice).getByText('Hiring plan').count(), 0, 'a folded project hides its pages');
+  await nav(alice).getByText('(1)').waitFor();
+  await alice.reload();
+  await nav(alice).getByText('(1)').waitFor(); // remembered
+  await alice.getByRole('button', { name: 'Expand Leadership' }).click();
+  await nav(alice).getByText('Hiring plan').first().waitFor();
+  // title search needs no request and finds by title only
+  await nav(alice).getByText('Titles', { exact: true }).click();
+  let searchRequests = 0;
+  alice.on('request', (r) => r.url().includes('/search') && searchRequests++);
+  await alice.getByPlaceholder(/Find a page by title/).fill('hiring');
+  await nav(alice).locator('.hit-title', { hasText: 'Hiring plan' }).waitFor();
+  await alice.getByPlaceholder(/Find a page by title/).fill('engineers');
+  await nav(alice).getByText('No page with that title').waitFor();
+  assert.equal(searchRequests, 0, 'title search asks the server for nothing');
+  await nav(alice).getByText('Text', { exact: true }).click();
+  // The page is saved and indexed a couple of seconds after the last edit (its body within a minute).
+  for (let i = 0; ; i++) {
+    const found = await alice.evaluate(async () => (await (await fetch(`/api/workspaces/${location.pathname.split('/')[2]}/search?q=hiring`)).json()).length);
+    if (found > 0) break;
+    assert.ok(i < 20, 'the page reaches the search index');
+    await alice.waitForTimeout(1000);
+  }
+  await alice.getByPlaceholder(/Search pages/).fill('hiring');
+  await nav(alice).locator('.hit-title', { hasText: 'Hiring plan' }).waitFor();
+  await alice.getByRole('button', { name: 'Exit search' }).click();
+  console.log('✓ explorer: projects fold, title search is local, workspace buttons on top, theme switch in the header');
 
   // --- phone ---
   const phone = await ctx('phone', { ...devices['iPhone 13'] });

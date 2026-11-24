@@ -19,6 +19,8 @@ interface Props {
   dark: boolean;
   /** Shown first in the header (the phone's menu button). */
   leading?: React.ReactNode;
+  /** Extra controls at the right of the page header (the light/dark switch). */
+  trailing?: React.ReactNode;
   linkFor: (pageId: string) => string;
   onTitle?: (pageId: string, title: string) => void;
   onIcon?: (pageId: string, icon: string) => void;
@@ -42,7 +44,7 @@ interface QuoteAnchor {
   end?: number;
 }
 
-export function PageView({ pageId, me, dark, leading, linkFor, onTitle, onIcon, onError, pendingUpload, onPendingTaken, onNeedStorage, initialCommentId }: Props) {
+export function PageView({ pageId, me, dark, leading, trailing, linkFor, onTitle, onIcon, onError, pendingUpload, onPendingTaken, onNeedStorage, initialCommentId }: Props) {
   const phone = useMediaQuery('(max-width: 48em)');
   const [info, setInfo] = useState<PageInfo | null>(null);
   const [missing, setMissing] = useState(false);
@@ -264,6 +266,7 @@ export function PageView({ pageId, me, dark, leading, linkFor, onTitle, onIcon, 
             </Breadcrumbs>
           </Group>
           <Group gap={4} wrap="nowrap">
+            {trailing}
             {phone ? (
               <Menu position="bottom-end" withinPortal>
                 <Menu.Target>

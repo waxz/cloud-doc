@@ -7,6 +7,8 @@ import {
   FormattingToolbarController,
   getDefaultReactSlashMenuItems,
   getFormattingToolbarItems,
+  useBlockNoteEditor,
+  useSelectedBlocks,
   SuggestionMenuController,
   useComponentsContext,
   useCreateBlockNote,
@@ -18,6 +20,7 @@ import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
 import { api, TAB_ID, type Comment } from './api';
 import { attachLiveMode } from './liveMode';
+import { IconArticle, IconFloatCenter, IconFloatLeft, IconFloatNone, IconFloatRight } from '@tabler/icons-react';
 import { COMMENT_COLORS, HIGHLIGHT_SHAPES, PageContext, type HighlightShape, schema, type Schema } from './blocks';
 import { errorText, highlightPositions, takeFind } from './util';
 
@@ -264,6 +267,9 @@ export function PageEditor({ pageId, me, canEdit, canComment, dark, onTitle, onI
   const meta = doc.getMap<string>('meta');
   const [title, setTitle] = useState('');
   const [icon, setIcon] = useState('');
+  // How the page is typeset ('article': a serif reading layout), kept in the document so everyone sees it.
+  const [layout, setLayout] = useState('');
+  const [layoutOpen, setLayoutOpen] = useState(false);
   const [synced, setSynced] = useState(false);
   const syncedRef = useRef(false);
   const [peers, setPeers] = useState<Peer[]>([]);
@@ -330,6 +336,7 @@ export function PageEditor({ pageId, me, canEdit, canComment, dark, onTitle, onI
       const i = meta.get('icon') ?? '';
       setTitle(t);
       setIcon(i);
+      setLayout(meta.get('layout') ?? '');
       // Until the document has synced, `meta` is empty: telling the sidebar then would blank
       // the page's title and icon there for as long as it takes to load.
       if (!syncedRef.current) return;
@@ -495,6 +502,7 @@ export function PageEditor({ pageId, me, canEdit, canComment, dark, onTitle, onI
     () => (
       <FormattingToolbar>
         {...getFormattingToolbarItems()}
+        <ImageLayoutButtons key="layout" />
         {hasComment && <CommentButton key="comment" onClick={() => {
           const text = editor.getSelectedText();
           if (text) commentRef.current?.(text, undefined, 'yellow', 'highlight');
@@ -966,7 +974,7 @@ export function PageEditor({ pageId, me, canEdit, canComment, dark, onTitle, onI
   }, [highlightComments]);
 
   return (
-    <div className={synced ? 'page' : 'page is-loading'} aria-busy={!synced}>
+    <div className={`${synced ? 'page' : 'page is-loading'}${layout === 'article' ? ' is-article' : ''}`} aria-busy={!synced}>
       {!synced && (
         <div className="page-loading" role="status">
           <Loader size="md" />
@@ -978,6 +986,31 @@ export function PageEditor({ pageId, me, canEdit, canComment, dark, onTitle, onI
           {!synced ? 'Connecting…' : saveNote || (editable ? 'Live · editing' : 'Live · reading')}
         </Text>
         <Group gap="sm">
+          {canEdit && synced && (
+            <Popover opened={layoutOpen} onChange={setLayoutOpen} position="bottom-end" shadow="md" withinPortal>
+              <Popover.Target>
+                <Tooltip label="Page layout">
+                  <ActionIcon variant={layout ? 'light' : 'subtle'} color={layout ? undefined : 'gray'} size="md" aria-label="Page layout" onClick={() => setLayoutOpen((o) => !o)}>
+                    <IconArticle size={18} />
+                  </ActionIcon>
+                </Tooltip>
+              </Popover.Target>
+              <Popover.Dropdown w={260}>
+                <Stack gap="xs">
+                  <Text size="sm" fw={600}>Page layout</Text>
+                  <SegmentedControl
+                    size="xs"
+                    value={layout || 'standard'}
+                    onChange={(v) => (v === 'article' ? meta.set('layout', 'article') : meta.delete('layout'))}
+                    data={[{ value: 'standard', label: 'Standard' }, { value: 'article', label: 'Article' }]}
+                  />
+                  <Text size="xs" c="dimmed">
+                    Article sets the page in a serif reading layout. Select a picture to float it left or right so the text wraps around it; its caption sits beneath it.
+                  </Text>
+                </Stack>
+              </Popover.Dropdown>
+            </Popover>
+          )}
           {canEdit && synced && (
             <SegmentedControl size="xs" value={viewMode} onChange={(value) => setViewMode(value as 'edit' | 'read')} data={[{ value: 'edit', label: 'Edit' }, { value: 'read', label: 'Read' }]} />
           )}
@@ -1104,6 +1137,38 @@ export function PageEditor({ pageId, me, canEdit, canComment, dark, onTitle, onI
         <SelectionComment editor={editor} onComment={onComment} pageId={pageId} onError={onError} />
       )}
     </div>
+  );
+}
+
+/** For a selected picture or video: float it left or right with the text wrapping around it, centre it, or give it the full width. */
+function ImageLayoutButtons() {
+  const Components = useComponentsContext()!;
+  const editor = useBlockNoteEditor<any, any, any>();
+  const blocks = useSelectedBlocks(editor);
+  const block = blocks.length === 1 ? blocks[0] : undefined;
+  if (!block || (block.type !== 'image' && block.type !== 'video')) return null;
+  const current = (block.props as { textAlignment?: string }).textAlignment ?? 'left';
+  // Stored in the picture's alignment (see the stylesheet): "right" floats right, "justify" floats left.
+  const options = [
+    { value: 'left', label: 'In line', icon: <IconFloatNone size={18} /> },
+    { value: 'center', label: 'Centred', icon: <IconFloatCenter size={18} /> },
+    { value: 'justify', label: 'Float left', icon: <IconFloatLeft size={18} /> },
+    { value: 'right', label: 'Float right', icon: <IconFloatRight size={18} /> },
+  ];
+  return (
+    <>
+      {options.map((o) => (
+        <Components.FormattingToolbar.Button
+          key={o.value}
+          className="bn-button"
+          label={o.label}
+          mainTooltip={o.label}
+          icon={o.icon}
+          isSelected={current === o.value}
+          onClick={() => editor.updateBlock(block, { props: { textAlignment: o.value } } as any)}
+        />
+      ))}
+    </>
   );
 }
 

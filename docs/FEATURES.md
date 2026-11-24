@@ -93,3 +93,14 @@ A storage is a **server URL** (the WebDAV address of your account) plus a **fold
 ## Phones
 
 Fields are 16px on touch screens so Safari doesn't zoom in when they get focus, and the formatting toolbar stays on screen and scrolls sideways instead of stretching the page.
+
+## Page layout, like an article
+
+Editors get a **Page layout** button above the page: *Article* sets the page in a serif reading layout (roomy lines, clear links), stored with the page so everyone sees it. Select a picture or video to **float it left or right** so the text wraps around it, centre it, or leave it in line; its caption sits beneath it. On a phone, floated pictures take the full width. (Floats ride on the picture's alignment, so pages that never used them look exactly as before.)
+
+## The explorer
+
+- *Workspace settings* and *Files* are the first buttons in the sidebar.
+- Each project folds shut from its header (remembered per browser, with a count of its pages).
+- Search has two modes: **Text** (words inside pages, on the server) and **Titles** (an instant filter of page titles, which asks the server for nothing).
+- The light/dark switch is in the page header; the account menu is just Settings (with the Storage tab), Admin and Sign out.
