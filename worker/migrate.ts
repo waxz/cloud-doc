@@ -15,6 +15,7 @@ import workspaceFiles from '../migrations/0014_workspace_files_shared_storage.sq
 import linkWorkspaceStorage from '../migrations/0015_link_workspace_storage.sql';
 import commentParent from '../migrations/0016_comment_parent.sql';
 import storageRootPath from '../migrations/0017_storage_root_path.sql';
+import appSettings from '../migrations/0018_app_settings.sql';
 
 /**
  * Migrations bundled into the Worker, applied on first use so a plain
@@ -40,6 +41,7 @@ const MIGRATIONS: [name: string, sql: string][] = [
   ['0015_link_workspace_storage.sql', linkWorkspaceStorage],
   ['0016_comment_parent.sql', commentParent],
   ['0017_storage_root_path.sql', storageRootPath],
+  ['0018_app_settings.sql', appSettings],
 ];
 
 /** Splits a migration into statements (no semicolons inside strings in these files). */

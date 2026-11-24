@@ -56,6 +56,17 @@ cloud-doc/<workspace>/<page>/history/<version>.ydoc
 | --- | --- | --- |
 | `PASSWORD_ITERATIONS` | var | PBKDF2-SHA256 iterations for new passwords. Default 50,000 (about 5 ms of CPU, which fits the Free plan). On the paid plan use 100,000, the Workers maximum; each hash records its own count, so existing passwords keep working. |
 | `STORAGE_KEY` | secret | Any long random string. Encrypts the WebDAV passwords users save (AES-256-GCM). See below. |
+| `RECOVERY_SECRET` | secret | Optional, 16 or more characters. Switches on **recovery mode** for a forgotten admin password. See below. |
+
+### Recovery mode (a forgotten admin password)
+
+The app sends no email, so a forgotten password is normally reset by an admin in the admin panel. If the **admin** is the one who forgot, set a secret named `RECOVERY_SECRET`:
+
+1. In the Cloudflare dashboard open **Workers & Pages → your Worker → Settings → Variables and Secrets**, add a **secret** named `RECOVERY_SECRET` with a long random value (16 characters or more; shorter counts as not set), and deploy. Or from a terminal: `npx wrangler secret put RECOVERY_SECRET`.
+2. The sign-in page now shows *I am the admin: use recovery mode*. Enter the secret, the admin's email (only needed when there is more than one admin) and a new password. That sets the password, ends every session of that account and signs in.
+3. Change or remove the secret in the dashboard whenever you like; with no secret (or a short one) recovery mode is off and the link doesn't appear.
+
+Wrong secrets are limited to 5 tries, then 15 minutes' wait, and every use is written to the Worker's log. Treat the secret like a root password. The admin panel (*Admin → Settings*) also lets you set a **contact email** that the sign-in page shows to everyone who forgot their password.
 
 ### The storage key
 

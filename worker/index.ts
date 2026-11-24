@@ -1,6 +1,6 @@
 import { routePartykitRequest } from 'partyserver';
 import { atLeast, requirePage } from './access.js';
-import { authStatus, currentUser, getMe, login, logout, registrationInfo, signup, type User } from './auth.js';
+import { authStatus, currentUser, getMe, login, logout, recover, registrationInfo, signup, type User } from './auth.js';
 import type { Env } from './env.js';
 import { HttpError, json } from './http.js';
 import { ensureSchema } from './migrate.js';
@@ -24,6 +24,7 @@ const route = (method: string, pattern: string, handler: Handler) =>
 route('POST', '/api/auth/signup', (r, e) => signup(r, e));
 route('POST', '/api/auth/login', (r, e) => login(r, e));
 route('POST', '/api/auth/logout', (r, e) => logout(r, e));
+route('POST', '/api/auth/recover', (r, e) => recover(r, e));
 route('GET', '/api/auth/status', (r, e) => authStatus(e));
 route('GET', '/api/register/:t', (r, e, u, [t]) => registrationInfo(e, t!));
 route('GET', '/api/me', (r, e, u) => getMe(e, u));
@@ -51,6 +52,8 @@ route('DELETE', '/api/admin/shared-storages/:s', (r, e, u, [s]) => settings.admi
 route('POST', '/api/admin/shared-storages/:s/test', (r, e, u, [s]) => settings.adminTestSharedStorage(r, e, u, s!));
 route('PUT', '/api/admin/shared-storages/:s/grants/:u', (r, e, u, [s, id]) => settings.adminSetGrant(r, e, u, s!, id!));
 route('DELETE', '/api/admin/shared-storages/:s/grants/:u', (r, e, u, [s, id]) => settings.adminRemoveGrant(e, u, s!, id!));
+route('GET', '/api/admin/settings', (r, e, u) => settings.adminGetSettings(e, u));
+route('PUT', '/api/admin/settings', (r, e, u) => settings.adminSetSettings(r, e, u));
 route('GET', '/api/admin/stats', (r, e, u) => adminStats(e, u));
 route('GET', '/api/admin/links', (r, e, u) => settings.adminListLinks(e, u));
 route('GET', '/api/admin/workspaces', (r, e, u) => settings.adminListWorkspaces(e, u));

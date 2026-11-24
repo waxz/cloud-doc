@@ -1,4 +1,4 @@
-import { Alert, Button, Loader, Paper, PasswordInput, Stack, Text, TextInput, Title } from '@mantine/core';
+import { Alert, Anchor, Button, Loader, Paper, PasswordInput, Stack, Text, TextInput, Title } from '@mantine/core';
 import { IconFileText } from '@tabler/icons-react';
 import { useEffect, useState } from 'react';
 import { api, type Me } from './api';
@@ -8,6 +8,10 @@ type Mode = { kind: 'signin' } | { kind: 'setup' } | { kind: 'register'; token: 
 
 interface Props {
   mode: Mode;
+  /** The admin's contact address, shown for people who forgot their password. */
+  adminEmail?: string;
+  /** Whether the Worker has a RECOVERY_SECRET, which switches on the admin recovery form. */
+  recovery?: boolean;
   note?: string;
   onAuthed: (me: Me) => void;
 }
@@ -16,7 +20,9 @@ interface Props {
  * Sign in; or, on a fresh install, create the first account (the admin);
  * or create an account from an admin's registration link.
  */
-export function AuthScreen({ mode, note, onAuthed }: Props) {
+export function AuthScreen({ mode, adminEmail, recovery, note, onAuthed }: Props) {
+  const [recovering, setRecovering] = useState(false);
+  const [secret, setSecret] = useState('');
   const [email, setEmail] = useState('');
   const [lockedEmail, setLockedEmail] = useState(false);
   const [name, setName] = useState('');
@@ -45,7 +51,7 @@ export function AuthScreen({ mode, note, onAuthed }: Props) {
     setBusy(true);
     setError('');
     try {
-      onAuthed(creating ? await api.signup(email, name, password, token) : await api.login(email, password));
+      onAuthed(recovering ? await api.recover(secret, email, password) : creating ? await api.signup(email, name, password, token) : await api.login(email, password));
     } catch (err) {
       setError(errorText(err));
     } finally {
@@ -53,7 +59,7 @@ export function AuthScreen({ mode, note, onAuthed }: Props) {
     }
   };
 
-  const heading = mode.kind === 'setup' ? 'Set up Cloud Doc' : mode.kind === 'register' ? 'Create your account' : 'Sign in';
+  const heading = recovering ? 'Admin recovery' : mode.kind === 'setup' ? 'Set up Cloud Doc' : mode.kind === 'register' ? 'Create your account' : 'Sign in';
 
   return (
     <div className="auth">
@@ -61,6 +67,11 @@ export function AuthScreen({ mode, note, onAuthed }: Props) {
         <Stack gap={4} mb="lg" align="center">
           <IconFileText size={36} stroke={1.4} />
           <Title order={3}>{heading}</Title>
+          {recovering && (
+            <Text size="sm" c="dimmed" ta="center">
+              Enter the recovery secret set for this Worker in the Cloudflare dashboard, and choose a new password for the admin account.
+            </Text>
+          )}
           {mode.kind === 'setup' && (
             <Text size="sm" c="dimmed" ta="center">
               This is a new install. The account you create now is the admin, who invites everyone else.
@@ -86,21 +97,24 @@ export function AuthScreen({ mode, note, onAuthed }: Props) {
         ) : (
           <form onSubmit={submit}>
             <Stack gap="sm">
+              {recovering && (
+                <PasswordInput label="Recovery secret" autoComplete="off" value={secret} onChange={(e) => setSecret(e.currentTarget.value)} required />
+              )}
               <TextInput
-                label="Email"
+                label={recovering ? 'Admin email (if there is more than one admin)' : 'Email'}
                 type="email"
                 autoComplete="email"
                 value={email}
                 readOnly={lockedEmail}
                 variant={lockedEmail ? 'filled' : 'default'}
                 onChange={(e) => setEmail(e.currentTarget.value)}
-                required
+                required={!recovering}
               />
               {creating && <TextInput label="Name" autoComplete="name" value={name} onChange={(e) => setName(e.currentTarget.value)} required />}
               <PasswordInput
-                label="Password"
-                autoComplete={creating ? 'new-password' : 'current-password'}
-                description={creating ? 'At least 8 characters' : undefined}
+                label={recovering ? 'New password' : 'Password'}
+                autoComplete={creating || recovering ? 'new-password' : 'current-password'}
+                description={creating || recovering ? 'At least 8 characters' : undefined}
                 value={password}
                 onChange={(e) => setPassword(e.currentTarget.value)}
                 required
@@ -111,11 +125,38 @@ export function AuthScreen({ mode, note, onAuthed }: Props) {
                 </Text>
               )}
               <Button type="submit" loading={busy} fullWidth mt="xs">
-                {creating ? 'Create account' : 'Sign in'}
+                {recovering ? 'Reset password and sign in' : creating ? 'Create account' : 'Sign in'}
               </Button>
-              {mode.kind === 'signin' && (
-                <Text size="sm" c="dimmed" ta="center">
-                  New here? Ask an admin for a registration link.
+              {mode.kind === 'signin' && !recovering && (
+                <Stack gap={2}>
+                  <Text size="sm" c="dimmed" ta="center">
+                    New here? Ask an admin for a registration link.
+                  </Text>
+                  <Text size="sm" c="dimmed" ta="center">
+                    Forgot your password?{' '}
+                    {adminEmail ? (
+                      <>
+                        Email the admin at{' '}
+                        <Anchor href={`mailto:${adminEmail}?subject=${encodeURIComponent('Cloud Doc: please reset my password')}`}>{adminEmail}</Anchor>.
+                      </>
+                    ) : (
+                      'Ask the admin to reset it.'
+                    )}
+                  </Text>
+                  {recovery && (
+                    <Text size="sm" ta="center">
+                      <Anchor component="button" type="button" onClick={() => setRecovering(true)}>
+                        I am the admin: use recovery mode
+                      </Anchor>
+                    </Text>
+                  )}
+                </Stack>
+              )}
+              {recovering && (
+                <Text size="sm" ta="center">
+                  <Anchor component="button" type="button" onClick={() => setRecovering(false)}>
+                    Back to sign in
+                  </Anchor>
                 </Text>
               )}
             </Stack>

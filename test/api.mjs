@@ -765,6 +765,48 @@ console.log('✓ share links: public read, subpages, commenter for outsiders, re
   console.log('✓ storage address: server URL + folder, checked, created on test or save');
 }
 
+// --- admin contact email, and recovery mode ---
+{
+  assert.equal((await anon.ok('GET', '/api/auth/status')).adminEmail, '', 'no contact email until the admin sets one');
+  await bob.expect(403, 'GET', '/api/admin/settings');
+  await bob.expect(403, 'PUT', '/api/admin/settings', { adminEmail: 'x@example.com' });
+  await alice.expect(400, 'PUT', '/api/admin/settings', { adminEmail: 'not an email' });
+  await alice.expect(400, 'PUT', '/api/admin/settings', { adminEmail: 'a@b.co, c@d.co' });
+  assert.equal((await alice.ok('PUT', '/api/admin/settings', { adminEmail: ` help-${run}@example.com ` })).adminEmail, `help-${run}@example.com`);
+  assert.equal((await anon.ok('GET', '/api/auth/status')).adminEmail, `help-${run}@example.com`, 'the sign-in page can show it to anyone');
+  assert.equal((await alice.ok('PUT', '/api/admin/settings', { adminEmail: '' })).adminEmail, '');
+  assert.equal((await anon.ok('GET', '/api/auth/status')).adminEmail, '', 'and it can be removed');
+  await alice.ok('PUT', '/api/admin/settings', { adminEmail: `help-${run}@example.com` });
+
+  const secret = process.env.RECOVERY_SECRET;
+  const status = await anon.ok('GET', '/api/auth/status');
+  const newPassword = 'a brand new password';
+  if (!secret) {
+    assert.equal(status.recovery, false);
+    assert.equal((await alice.ok('GET', '/api/admin/settings')).recoveryEnabled, false);
+    await anon.expect(404, 'POST', '/api/auth/recover', { secret: 'anything at all, long enough', email: alice.email, newPassword });
+    console.log('✓ admin contact email on the sign-in page; recovery mode is off without a secret');
+  } else {
+    assert.equal(status.recovery, true);
+    assert.equal((await alice.ok('GET', '/api/admin/settings')).recoveryEnabled, true);
+    await anon.expect(401, 'POST', '/api/auth/recover', { secret: 'the wrong secret entirely', email: alice.email, newPassword });
+    await anon.expect(400, 'POST', '/api/auth/recover', { secret, email: alice.email, newPassword: 'short' });
+    await anon.expect(404, 'POST', '/api/auth/recover', { secret, email: bob.email, newPassword }); // Bob is not an admin
+    const oldCookie = alice.cookieHeader;
+    const back = await alice.ok('POST', '/api/auth/recover', { secret, email: alice.email, newPassword });
+    assert.equal(back.user.email, alice.email);
+    assert.equal(back.user.role, 'admin');
+    assert.equal((await fetch(`${BASE}/api/me`, { headers: { cookie: oldCookie } })).status, 401, 'the old sessions are ended');
+    await anon.expect(401, 'POST', '/api/auth/login', { email: alice.email, password: 'correct horse battery' });
+    await anon.ok('POST', '/api/auth/login', { email: alice.email, password: newPassword });
+    assert.equal((await alice.ok('GET', '/api/me')).user.id, alice.id, 'recovery signs the admin in');
+    // guessing the secret is limited
+    for (let i = 0; i < 5; i++) await anon.expect(401, 'POST', '/api/auth/recover', { secret: `wrong guess number ${i}`, email: alice.email, newPassword });
+    await anon.expect(429, 'POST', '/api/auth/recover', { secret, email: alice.email, newPassword });
+    console.log('✓ admin contact email on the sign-in page; recovery mode: secret checked, password reset, sessions ended, guesses limited');
+  }
+}
+
 a.close();
 dav.close();
 console.log('\nAll API checks passed');

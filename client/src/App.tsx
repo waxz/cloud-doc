@@ -13,6 +13,7 @@ export function App() {
   const [me, setMe] = useState<Me | null | undefined>(undefined);
   /** Whether this is a fresh install (no accounts yet), asked when signed out. */
   const [setup, setSetup] = useState<boolean | undefined>(undefined);
+  const [contact, setContact] = useState({ adminEmail: '', recovery: false });
   const [signingIn, setSigningIn] = useState(false);
   const [error, setError] = useState('');
   const dark = useComputedColorScheme('light') === 'dark';
@@ -30,7 +31,7 @@ export function App() {
     loadMe();
   }, [loadMe]);
   useEffect(() => {
-    if (me === null) api.authStatus().then((s) => setSetup(s.setup), (e) => setError(errorText(e)));
+    if (me === null) api.authStatus().then((s) => (setSetup(s.setup), setContact({ adminEmail: s.adminEmail, recovery: s.recovery })), (e) => setError(errorText(e)));
   }, [me]);
   // A registration link opened while signed in: nothing to do there.
   useEffect(() => {
@@ -78,6 +79,8 @@ export function App() {
         {banner}
         <AuthScreen
           mode={mode}
+          adminEmail={contact.adminEmail}
+          recovery={contact.recovery}
           note={signingIn ? 'Sign in to use this link.' : undefined}
           onAuthed={(m) => {
             setMe(m);

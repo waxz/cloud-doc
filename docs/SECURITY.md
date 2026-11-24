@@ -16,7 +16,7 @@ What Cloud Doc does, and what it leaves to you.
 
 ## What it leaves to you
 
-- There is **no email verification or password reset** (the app sends no email) and **no two-factor sign-in**. Admins hand out registration links and reset passwords in the admin panel.
+- There is **no email verification or automatic password reset** (the app sends no email) and **no two-factor sign-in**. The sign-in page shows the admin's contact email, so people who forgot their password can write to the admin, who resets it in the admin panel. A forgotten *admin* password can be recovered with the optional `RECOVERY_SECRET` (see [Deploying](DEPLOY.md#recovery-mode-a-forgotten-admin-password)): guard it like a root password.
 - There is **no rate limit on the API** beyond failed sign-ins. If the instance is public, use Cloudflare's rate-limiting rules or WAF in front of it.
 - Keep a copy of `STORAGE_KEY`: without it, saved storage passwords can't be read.
 

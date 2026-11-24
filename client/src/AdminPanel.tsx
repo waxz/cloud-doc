@@ -21,7 +21,7 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { useMediaQuery } from '@mantine/hooks';
-import { IconChartBar, IconDatabase, IconCheck, IconCopy, IconLink, IconPlus, IconTrash, IconUserPlus, IconUsers } from '@tabler/icons-react';
+import { IconChartBar, IconDatabase, IconCheck, IconCopy, IconLink, IconPlus, IconSettings, IconTrash, IconUserPlus, IconUsers } from '@tabler/icons-react';
 import { useCallback, useEffect, useState } from 'react';
 import { type AdminUser, api, type RegistrationLink, type Storage, type User } from './api';
 import { href } from './route';
@@ -65,6 +65,9 @@ export function AdminPanel({ me, opened, onClose, onError }: Props) {
           </Tabs.Tab>
           <Tabs.Tab value="usage" leftSection={<IconChartBar size={16} />}>
             Usage
+          </Tabs.Tab>
+          <Tabs.Tab value="settings" leftSection={<IconSettings size={16} />}>
+            Settings
           </Tabs.Tab>
           <Tabs.Tab value="links" leftSection={<IconLink size={16} />}>
             Registration links
@@ -125,11 +128,70 @@ export function AdminPanel({ me, opened, onClose, onError }: Props) {
         <Tabs.Panel value="usage">
           <UsagePanel onError={onError} />
         </Tabs.Panel>
+        <Tabs.Panel value="settings">
+          <InstanceSettings onError={onError} />
+        </Tabs.Panel>
         <Tabs.Panel value="links">
           <Links links={links} onChanged={load} onError={onError} />
         </Tabs.Panel>
       </Tabs>
     </Modal>
+  );
+}
+
+/** The contact email people see on the sign-in page, and the state of recovery mode. */
+function InstanceSettings({ onError }: { onError: (m: string) => void }) {
+  const [saved, setSaved] = useState<{ adminEmail: string; recoveryEnabled: boolean } | null>(null);
+  const [email, setEmail] = useState('');
+  const [note, setNote] = useState('');
+  useEffect(() => {
+    api.adminSettings().then((s) => (setSaved(s), setEmail(s.adminEmail)), (e) => onError(errorText(e)));
+  }, [onError]);
+  if (!saved) return <Loader size="sm" />;
+  return (
+    <Stack gap="lg" maw={560}>
+      <form
+        onSubmit={async (e) => {
+          e.preventDefault();
+          try {
+            const next = await api.setAdminSettings({ adminEmail: email });
+            setSaved(next);
+            setEmail(next.adminEmail);
+            setNote(next.adminEmail ? 'Saved. It now shows on the sign-in page.' : 'Removed from the sign-in page.');
+          } catch (err) {
+            setNote('');
+            onError(errorText(err));
+          }
+        }}
+      >
+        <Stack gap="xs">
+          <TextInput
+            label="Admin contact email"
+            description="Shown on the sign-in page, so people who forget their password can email you to have it reset. Leave empty to show nothing."
+            placeholder="admin@example.com"
+            type="email"
+            value={email}
+            onChange={(e) => (setEmail(e.currentTarget.value), setNote(''))}
+          />
+          <Group>
+            <Button type="submit" size="xs" disabled={email.trim() === saved.adminEmail}>Save</Button>
+            {note && <Text size="sm" c="teal">{note}</Text>}
+          </Group>
+        </Stack>
+      </form>
+      <div>
+        <Group gap="xs" mb={4}>
+          <Text fw={600} size="sm">Recovery mode</Text>
+          <Badge color={saved.recoveryEnabled ? 'teal' : 'gray'} variant="light">{saved.recoveryEnabled ? 'On' : 'Off'}</Badge>
+        </Group>
+        <Text size="sm" c="dimmed">
+          If you ever forget the admin password, recovery mode lets you set a new one from the sign-in page with a secret only the Worker's owner knows.
+          {saved.recoveryEnabled
+            ? ' It is on: to change the secret, edit RECOVERY_SECRET in the Cloudflare dashboard (Workers & Pages → this Worker → Settings → Variables and Secrets).'
+            : ' To turn it on, add a secret named RECOVERY_SECRET (16 or more characters) in the Cloudflare dashboard: Workers & Pages → this Worker → Settings → Variables and Secrets. Change it there any time.'}
+        </Text>
+      </div>
+    </Stack>
   );
 }
 

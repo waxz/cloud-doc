@@ -106,8 +106,71 @@ async function needsSetup(env: Env): Promise<boolean> {
   return !(await env.DB.prepare('SELECT 1 FROM users LIMIT 1').first());
 }
 
+/** Recovery mode needs a long secret; anything shorter counts as not set. */
+export const recoveryEnabled = (env: Env) => (env.RECOVERY_SECRET ?? '').length >= 16;
+
+export async function getAppSetting(env: Env, key: string): Promise<string> {
+  return (await env.DB.prepare('SELECT value FROM app_settings WHERE key = ?').bind(key).first<{ value: string }>())?.value ?? '';
+}
+
+/** What the sign-in page needs before anyone is signed in: the admin's contact email, and whether recovery mode exists. */
 export async function authStatus(env: Env): Promise<Response> {
-  return json({ setup: await needsSetup(env) });
+  return json({ setup: await needsSetup(env), adminEmail: await getAppSetting(env, 'admin_email'), recovery: recoveryEnabled(env) });
+}
+
+/** Constant-time comparison of two secrets (both are hashed first, so length doesn't leak either). */
+async function sameSecret(a: string, b: string): Promise<boolean> {
+  const [x, y] = await Promise.all([sha256Hex(a), sha256Hex(b)]);
+  let diff = 0;
+  for (let i = 0; i < x.length; i++) diff |= x.charCodeAt(i) ^ y.charCodeAt(i);
+  return diff === 0;
+}
+
+const RECOVERY_KEY = '__recovery__';
+
+/**
+ * Recovery mode: with the RECOVERY_SECRET of the Worker, set a new password for an admin account and sign in as it.
+ * For when the admin has forgotten their password and nobody else can reset it. Tries are limited (5 wrong secrets, then
+ * 15 minutes' wait), all sessions of the account are ended, and the use is written to the log.
+ */
+export async function recover(req: Request, env: Env): Promise<Response> {
+  if (!recoveryEnabled(env)) throw new HttpError(404, 'recovery mode is not enabled: set a RECOVERY_SECRET of at least 16 characters in the Cloudflare dashboard');
+  const body = await readJson<{ secret?: string; email?: string; newPassword?: string }>(req);
+  const now = Date.now();
+  const fails = await env.DB.prepare('SELECT count, window_start FROM login_failures WHERE email = ?')
+    .bind(RECOVERY_KEY)
+    .first<{ count: number; window_start: number }>();
+  if (fails && now - fails.window_start < FAILURE_WINDOW && fails.count >= 5) {
+    throw new HttpError(429, 'too many wrong recovery secrets; try again in 15 minutes');
+  }
+  if (!(await sameSecret(typeof body.secret === 'string' ? body.secret : '', env.RECOVERY_SECRET!))) {
+    await env.DB.prepare(
+      `INSERT INTO login_failures (email, count, window_start) VALUES (?, 1, ?)
+       ON CONFLICT (email) DO UPDATE SET
+         count = CASE WHEN ? - window_start < ? THEN count + 1 ELSE 1 END,
+         window_start = CASE WHEN ? - window_start < ? THEN window_start ELSE excluded.window_start END`
+    )
+      .bind(RECOVERY_KEY, now, now, FAILURE_WINDOW, now, FAILURE_WINDOW)
+      .run();
+    throw new HttpError(401, 'wrong recovery secret');
+  }
+  const password = typeof body.newPassword === 'string' ? body.newPassword : '';
+  if (password.length < 8) throw new HttpError(400, 'the new password must be at least 8 characters');
+  const wanted = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
+  const { results: admins } = await env.DB.prepare("SELECT id, email, name, role FROM users WHERE role = 'admin' ORDER BY created_at").all<User>();
+  const target = wanted ? admins.find((a) => a.email.toLowerCase() === wanted) : admins.length === 1 ? admins[0] : undefined;
+  if (!target) {
+    throw new HttpError(wanted ? 404 : 400, wanted ? 'no admin account has that email' : admins.length ? 'there are several admins: enter the email of the one to recover' : 'there is no admin account');
+  }
+  await env.DB.batch([
+    env.DB.prepare('UPDATE users SET password_hash = ?, disabled = 0 WHERE id = ?').bind(await hashPassword(env, password), target.id),
+    env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(target.id),
+    env.DB.prepare('DELETE FROM login_failures WHERE email IN (?, ?)').bind(RECOVERY_KEY, target.email.toLowerCase()),
+  ]);
+  console.warn(`recovery mode used: password reset for admin ${target.id}`);
+  const res = await me(env, target);
+  res.headers.append('set-cookie', await startSession(env, target.id));
+  return res;
 }
 
 interface RegistrationLink {
