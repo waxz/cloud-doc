@@ -72,7 +72,7 @@ const opened = []; // pages, for a screenshot of each when something fails
   await btn(alice, 'Add a storage').click();
   const dlg = alice.getByRole('dialog');
   await dlg.getByPlaceholder('My drive').fill('Home drive');
-  await dlg.getByLabel('WebDAV folder URL').fill(`${dav.url}/alice`);
+  await dlg.getByLabel('Server URL').fill(`${dav.url}/alice`);
   await dlg.getByLabel('Username').fill(dav.user);
   await dlg.getByLabel('Password', { exact: true }).fill(dav.pass);
   await btn(alice, 'Test').click();
@@ -280,7 +280,18 @@ const opened = []; // pages, for a screenshot of each when something fails
   await phone.getByRole('dialog').locator('.comments-panel').waitFor();
   await phone.waitForTimeout(400);
   await shot(phone, 'ui-phone-comments');
-  console.log('✓ phone: drawer navigation, page with media, panels as bottom sheets');
+  // Safari zooms into fields under 16px, and a toolbar wider than the screen stretches the page.
+  const small = await phone.evaluate(() => [...document.querySelectorAll('input:not([type=hidden]):not([type=checkbox]),textarea,select,[contenteditable="true"]')]
+    .filter((e) => e.getBoundingClientRect().width > 0 && parseFloat(getComputedStyle(e).fontSize) < 16).map((e) => `${e.tagName}.${e.className}`.slice(0, 50)));
+  assert.deepEqual(small, [], 'every field is at least 16px on a phone');
+  await phone.getByRole('button', { name: 'Close panel' }).click().catch(() => phone.keyboard.press('Escape'));
+  await phone.waitForTimeout(500);
+  await phone.locator('.bn-editor').getByText('Ship the beta in March.').first().click({ clickCount: 3 });
+  await phone.locator('.bn-formatting-toolbar').waitFor({ timeout: 5000 });
+  const bar = await phone.locator('.bn-formatting-toolbar').boundingBox();
+  assert.ok(bar.x >= 0 && bar.x + bar.width <= 391, 'the formatting toolbar stays on the screen');
+  assert.ok(await phone.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), 'selecting text does not widen the page');
+  console.log('✓ phone: drawer navigation, page with media, panels as bottom sheets, fields 16px, toolbar fits');
 
   console.log('errors:', errors);
   assert.equal(errors.length, 0);

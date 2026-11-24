@@ -85,3 +85,11 @@ Every rule is checked on the server. Through a share link, signed-out visitors o
 ## Move, back up, restore a workspace
 
 In *Workspace settings* (owner): move all files and history to another storage, save a full backup to one of your storages, or restore a backup as a new workspace (also from another instance, by adding its storage). See the [audit](AUDIT.md) for the format.
+
+## Storage address
+
+A storage is a **server URL** (the WebDAV address of your account) plus a **folder** under it. *Test* checks the server and your login first, then the folder, and says which one is wrong; a missing folder can be created from the test result, and saving creates it too. A storage saved as a single URL before keeps working unchanged.
+
+## Phones
+
+Fields are 16px on touch screens so Safari doesn't zoom in when they get focus, and the formatting toolbar stays on screen and scrolls sideways instead of stretching the page.
