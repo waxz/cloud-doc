@@ -140,6 +140,13 @@ export function PageView({ pageId, me, dark, leading, trailing, linkFor, onTitle
     });
   }, [pageId, onError]);
 
+  useEffect(() => {
+    if (panel !== 'outline') return;
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setPanel(null);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [panel]);
+
   // Upload errors that mean "no storage yet" open the storage settings.
   const uploadError = useCallback(
     (m: string) => {
@@ -214,6 +221,8 @@ export function PageView({ pageId, me, dark, leading, trailing, linkFor, onTitle
     { key: 'files', icon: <IconPaperclip size={18} />, show: !info.viaShare },
     { key: 'history', icon: <IconHistory size={18} />, show: !info.viaShare },
   ];
+  // Everything but the outline sits in a column beside the page; the outline floats.
+  const sidePanel = panel !== null && panel !== 'outline';
   const canShare = !!me && !info.viaShare && atLeast(info.role, 'editor');
   // Someone reading through a share link with nothing to comment on or edit: no margin column, the page takes the whole window.
   const reviewOnly = info.viaShare && !atLeast(info.role, 'commenter');
@@ -360,18 +369,30 @@ export function PageView({ pageId, me, dark, leading, trailing, linkFor, onTitle
           {body}
         </Drawer>
       ) : (
-        // The third column: the margin comments when no panel is open, the panel (covering them) when one is.
-        <div className={`right-col${panel ? ' has-panel' : ''}${hasMargin ? ' has-margin' : ''}`}>
-          {panel && (
-            <aside className="side-panel">
-              <Group justify="space-between" className="side-panel-head">
-                <Text fw={650} size="md">{PANEL_TITLE[panel]}</Text>
-                <CloseButton onClick={() => setPanel(null)} aria-label="Close panel" />
+        <>
+          {/* The third column: the margin comments when no panel is open, the panel (covering them) when one is.
+              The outline is not one of these: it floats over the page, so opening it never moves the text. */}
+          <div className={`right-col${sidePanel ? ' has-panel' : ''}${hasMargin ? ' has-margin' : ''}`}>
+            {sidePanel && (
+              <aside className="side-panel">
+                <Group justify="space-between" className="side-panel-head">
+                  <Text fw={650} size="md">{PANEL_TITLE[panel!]}</Text>
+                  <CloseButton onClick={() => setPanel(null)} aria-label="Close panel" />
+                </Group>
+                {body}
+              </aside>
+            )}
+          </div>
+          {panel === 'outline' && (
+            <aside className="outline-float" aria-label="Outline">
+              <Group justify="space-between" mb={6}>
+                <Text fw={650} size="sm">Outline</Text>
+                <CloseButton size="sm" onClick={() => setPanel(null)} aria-label="Close outline" />
               </Group>
               {body}
             </aside>
           )}
-        </div>
+        </>
       )}
       {canComment && <ThreadPopover pageId={pageId} me={me} role={info.role} onOpenPanel={(id) => window.dispatchEvent(new CustomEvent('cloud-doc-open-comment', { detail: id }))} onError={onError} />}
       <ShareDialog pageId={pageId} opened={shareOpen} canShareEdit={atLeast(info.role, 'admin')} onClose={() => setShareOpen(false)} onError={onError} />

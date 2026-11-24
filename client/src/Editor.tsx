@@ -272,6 +272,8 @@ function snapshotProvider(doc: Y.Doc, pageId: string): YProvider {
       () => undefined
     );
   void load();
+  // once more shortly after opening: the author's last few seconds of typing may still have been on their way to the room
+  const again = setTimeout(() => void load(), 4000);
   const stopPolling = pollWhenVisible(() => void load(), 180_000, 60_000);
   return {
     awareness,
@@ -279,6 +281,7 @@ function snapshotProvider(doc: Y.Doc, pageId: string): YProvider {
     off: (event: string, fn: (...args: any[]) => void) => listeners.get(event)?.delete(fn),
     destroy: () => {
       stopped = true;
+      clearTimeout(again);
       stopPolling();
       awareness.destroy();
     },
