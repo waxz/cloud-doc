@@ -8,6 +8,7 @@ import {
   Menu,
   Modal,
   ScrollArea,
+  SegmentedControl,
   Stack,
   Text,
   TextInput,
@@ -18,6 +19,7 @@ import {
 import { useDisclosure, useMediaQuery } from '@mantine/hooks';
 import {
   IconChevronDown,
+  IconChevronRight,
   IconLogout,
   IconMoon,
   IconLayoutSidebarLeftCollapse,
@@ -29,7 +31,6 @@ import {
   IconSettings,
   IconShieldLock,
   IconSun,
-  IconDatabase,
   IconUsersGroup,
   IconX,
 } from '@tabler/icons-react';
@@ -86,6 +87,24 @@ export function Shell({ me, workspace, pageId, commentId, dark, onMeChanged, onS
   const [projects, setProjects] = useState<Project[]>([]);
   const [pages, setPages] = useState<Record<string, Page[]>>({});
   const [query, setQuery] = useState('');
+  // Search either the words inside pages (on the server) or just page titles (instant, here, no request).
+  const [searchMode, setSearchMode] = useState<'text' | 'title'>(() => {
+    try { return localStorage.getItem('cloud-doc-search-mode') === 'title' ? 'title' : 'text'; } catch { return 'text'; }
+  });
+  const pickSearchMode = (mode: 'text' | 'title') => {
+    setSearchMode(mode);
+    try { localStorage.setItem('cloud-doc-search-mode', mode); } catch { /* not remembered */ }
+  };
+  // Projects folded shut in the explorer (remembered per browser).
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
+    try { return JSON.parse(localStorage.getItem('cloud-doc-collapsed') ?? '{}') as Record<string, boolean>; } catch { return {}; }
+  });
+  const toggleProject = (id: string) => setCollapsed((c) => {
+    const next = { ...c, [id]: !c[id] };
+    if (!next[id]) delete next[id];
+    try { localStorage.setItem('cloud-doc-collapsed', JSON.stringify(next)); } catch { /* not remembered */ }
+    return next;
+  });
   const searchInput = useRef<HTMLInputElement>(null);
   const [favorites, setFavorites] = useState(getFavorites);
   useEffect(() => {
@@ -157,10 +176,10 @@ export function Shell({ me, workspace, pageId, commentId, dark, onMeChanged, onS
 
 
   useEffect(() => {
-    if (!query.trim()) return setHits(null);
+    if (!query.trim() || searchMode === 'title') return setHits(null);
     const t = setTimeout(() => api.search(wid, query).then(setHits, (e) => onError(errorText(e))), 200);
     return () => clearTimeout(t);
-  }, [query, wid, onError]);
+  }, [query, searchMode, wid, onError]);
 
   /** Opens a page. A search stays up (it only ends with its exit button), so several results can be visited in turn. */
   const open = (id: string | null, keepSearch = false) => {
@@ -240,10 +259,30 @@ export function Shell({ me, workspace, pageId, commentId, dark, onMeChanged, onS
     return favorites.map((id) => all.find((p) => p.id === id)).filter((p): p is Page => !!p);
   }, [favorites, pages]);
   const projectName = useMemo(() => Object.fromEntries(projects.map((p) => [p.id, p.name])), [projects]);
+  // Title search: matching pages across the workspace, each with the pages above it, found without asking the server.
+  const titleHits = useMemo(() => {
+    const q = query.trim().toLocaleLowerCase();
+    if (searchMode !== 'title' || !q) return null;
+    const all = Object.values(pages).flat();
+    const byId = new Map(all.map((p) => [p.id, p]));
+    const trail = (p: Page): string => {
+      const names: string[] = [];
+      for (let up = p.parent_id ? byId.get(p.parent_id) : undefined, n = 0; up && n < 8; up = up.parent_id ? byId.get(up.parent_id) : undefined, n++) names.unshift(up.title || 'Untitled');
+      return [projectName[p.project_id] ?? '', ...names].filter(Boolean).join(' / ');
+    };
+    return all.filter((p) => (p.title || 'Untitled').toLocaleLowerCase().includes(q)).slice(0, 50).map((p) => ({ page: p, trail: trail(p) }));
+  }, [query, searchMode, pages, projectName]);
   const linkFor = useCallback((id: string) => href.workspace(wid, id), [wid]);
   const showSidebar = (
     <Tooltip label="Show sidebar (Ctrl+\)">
       <ActionIcon variant="subtle" color="gray" size="lg" aria-label="Show sidebar" onClick={() => hideNav(false)}><IconLayoutSidebarLeftExpand size={18} /></ActionIcon>
+    </Tooltip>
+  );
+  const themeToggle = (
+    <Tooltip label={dark ? 'Light mode' : 'Dark mode'}>
+      <ActionIcon variant="subtle" color="gray" size="lg" aria-label={dark ? 'Light mode' : 'Dark mode'} onClick={() => toggleColorScheme()}>
+        {dark ? <IconSun size={18} /> : <IconMoon size={18} />}
+      </ActionIcon>
     </Tooltip>
   );
   const burger = phone ? <Burger opened={navOpen} onClick={nav.toggle} size="sm" aria-label="Pages" /> : navHidden ? showSidebar : null;
@@ -277,10 +316,6 @@ export function Shell({ me, workspace, pageId, commentId, dark, onMeChanged, onS
                     New workspace
                   </Menu.Item>
                 )}
-                <Menu.Divider />
-                <Menu.Item leftSection={<IconUsersGroup size={15} />} onClick={() => setWsSettings(true)}>
-                  Workspace settings
-                </Menu.Item>
               </Menu.Dropdown>
             </Menu>
             {phone && (
@@ -294,10 +329,18 @@ export function Shell({ me, workspace, pageId, commentId, dark, onMeChanged, onS
               </Tooltip>
             )}
           </Group>
+          <Group gap={4} mt={6} grow wrap="nowrap">
+            <Button variant="subtle" color="gray" size="compact-sm" justify="flex-start" leftSection={<IconUsersGroup size={15} />} onClick={() => setWsSettings(true)} aria-label="Workspace settings">
+              Settings
+            </Button>
+            <Button variant="subtle" color="gray" size="compact-sm" justify="flex-start" leftSection={<IconPaperclip size={15} />} onClick={() => setFilesOpen(true)} aria-label="Workspace files">
+              Files
+            </Button>
+          </Group>
           <TextInput
-            mt={8}
+            mt={6}
             size="sm"
-            placeholder="Search pages  (Ctrl K)"
+            placeholder={searchMode === 'title' ? 'Find a page by title  (Ctrl K)' : 'Search pages  (Ctrl K)'}
             ref={searchInput}
             leftSection={<IconSearch size={15} />}
             value={query}
@@ -305,12 +348,28 @@ export function Shell({ me, workspace, pageId, commentId, dark, onMeChanged, onS
             onKeyDown={(e) => { if (e.key === 'Escape') setQuery(''); }}
             rightSection={query && <ActionIcon size="sm" variant="subtle" color="gray" aria-label="Exit search" onClick={() => setQuery('')}><IconX size={14} /></ActionIcon>}
           />
-          <Button variant="subtle" color="gray" size="compact-sm" fullWidth justify="flex-start" mt={4} leftSection={<IconPaperclip size={15} />} onClick={() => setFilesOpen(true)}>
-            Workspace files
-          </Button>
+          <SegmentedControl
+            mt={6}
+            size="xs"
+            fullWidth
+            value={searchMode}
+            onChange={(v) => pickSearchMode(v as 'text' | 'title')}
+            data={[{ value: 'text', label: 'Text' }, { value: 'title', label: 'Titles' }]}
+            aria-label="What to search"
+          />
         </AppShell.Section>
         <AppShell.Section grow component={ScrollArea} px="xs" type="auto">
-          {hits ? (
+          {titleHits ? (
+            <Stack gap={2}>
+              {titleHits.length === 0 && <Text size="sm" c="dimmed" p={8}>No page with that title</Text>}
+              {titleHits.map(({ page: p, trail }) => (
+                <div key={p.id} className={`hit${p.id === pageId ? ' is-active' : ''}`} onClick={() => open(p.id, true)}>
+                  <div className="hit-title">{p.icon ? `${p.icon} ` : ''}{p.title || 'Untitled'}</div>
+                  {trail && <div className="hit-project">{trail}</div>}
+                </div>
+              ))}
+            </Stack>
+          ) : hits ? (
             <Stack gap={2}>
               {hits.length === 0 && (
                 <Text size="sm" c="dimmed" p={8}>
@@ -354,9 +413,18 @@ export function Shell({ me, workspace, pageId, commentId, dark, onMeChanged, onS
             {projects.map((project) => (
               <div key={project.id} className="project">
                 <Group justify="space-between" className="project-head" wrap="nowrap" gap={0}>
-                  <Text size="xs" fw={600} c="dimmed" tt="uppercase" truncate="end">
-                    {project.name}
-                  </Text>
+                  <UnstyledButton
+                    onClick={() => toggleProject(project.id)}
+                    aria-expanded={!collapsed[project.id]}
+                    aria-label={`${collapsed[project.id] ? 'Expand' : 'Collapse'} ${project.name}`}
+                    style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, flex: 1 }}
+                  >
+                    {collapsed[project.id] ? <IconChevronRight size={14} /> : <IconChevronDown size={14} />}
+                    <Text size="xs" fw={600} c="dimmed" tt="uppercase" truncate="end">
+                      {project.name}
+                    </Text>
+                    {collapsed[project.id] && <Text size="xs" c="dimmed">({(pages[project.id] ?? []).length})</Text>}
+                  </UnstyledButton>
                   <Group gap={0} wrap="nowrap" className="project-actions">
                     {atLeast(project.role, 'admin') && (
                       <Tooltip label="Project settings">
@@ -374,7 +442,7 @@ export function Shell({ me, workspace, pageId, commentId, dark, onMeChanged, onS
                     )}
                   </Group>
                 </Group>
-                <PageTree
+                {!collapsed[project.id] && <PageTree
                   projectId={project.id}
                   pages={pages[project.id] ?? []}
                   canEdit={atLeast(project.role, 'editor')}
@@ -388,7 +456,7 @@ export function Shell({ me, workspace, pageId, commentId, dark, onMeChanged, onS
                     uploadTarget.current = p.id;
                     fileInput.current?.click();
                   }}
-                />
+                />}
               </div>
             ))}
             </>
@@ -417,19 +485,13 @@ export function Shell({ me, workspace, pageId, commentId, dark, onMeChanged, onS
             </Menu.Target>
             <Menu.Dropdown>
               <Menu.Item leftSection={<IconSettings size={15} />} onClick={() => setUserSettings('profile')}>
-                Settings
-              </Menu.Item>
-              <Menu.Item leftSection={<IconDatabase size={15} />} onClick={() => setUserSettings('storage')}>
-                Storage
+                Settings and storage
               </Menu.Item>
               {me.user.role === 'admin' && (
                 <Menu.Item leftSection={<IconShieldLock size={15} />} onClick={() => setAdmin(true)}>
                   Admin
                 </Menu.Item>
               )}
-              <Menu.Item leftSection={dark ? <IconSun size={15} /> : <IconMoon size={15} />} onClick={() => toggleColorScheme()}>
-                {dark ? 'Light mode' : 'Dark mode'}
-              </Menu.Item>
               <Menu.Divider />
               <Menu.Item color="red" leftSection={<IconLogout size={15} />} onClick={onSignOut}>
                 Sign out
@@ -449,6 +511,7 @@ export function Shell({ me, workspace, pageId, commentId, dark, onMeChanged, onS
             me={me.user}
             dark={dark}
             leading={burger}
+            trailing={themeToggle}
             linkFor={linkFor}
             onTitle={onTitle}
             onIcon={onIcon}
@@ -461,6 +524,7 @@ export function Shell({ me, workspace, pageId, commentId, dark, onMeChanged, onS
         ) : (
           <div className="empty">
             {burger && <div className="empty-burger">{burger}</div>}
+            <div style={{ position: 'absolute', top: 8, right: 8 }}>{themeToggle}</div>
             <Stack align="center" gap="xs">
               <Text c="dimmed">Pick a page, or start a new one.</Text>
               {projects[0] && atLeast(projects[0].role, 'editor') && (
