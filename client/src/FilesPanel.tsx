@@ -1,10 +1,9 @@
 import { ActionIcon, Anchor, Button, FileButton, Group, Stack, Text, Tooltip } from '@mantine/core';
 import { IconFile, IconFiles, IconFileTypePdf, IconMovie, IconMusic, IconPhoto, IconRowInsertBottom, IconTrash, IconUpload } from '@tabler/icons-react';
 import { useCallback, useEffect, useState } from 'react';
-import { ApiError, api, atLeast, type FileInfo, type Role, type User } from './api';
-import { blockTypeFor } from './blocks';
+import { api, atLeast, type FileInfo, type Role, type User } from './api';
 import type { Editor } from './Editor';
-import { errorText, formatBytes, timeAgo } from './util';
+import { blockTypeFor, deleteFileAsking, errorText, formatBytes, timeAgo } from './util';
 
 interface Props {
   pageId: string;
@@ -35,31 +34,6 @@ export async function uploadInto(pageId: string, editor: Editor | null, files: F
     } catch (e) {
       onError(`${file.name}: ${errorText(e)}`);
     }
-  }
-}
-
-/**
- * Deletes a file, asking first when pages still use it (the answer lists them). Resolves true when it was deleted.
- */
-export async function deleteFileAsking(f: { id: string; name: string }, onError: (m: string) => void): Promise<boolean> {
-  try {
-    await api.deleteFile(f.id);
-    return true;
-  } catch (e) {
-    if (e instanceof ApiError && e.status === 409 && Array.isArray(e.data.used_in)) {
-      const used = e.data.used_in as { id: string; title: string }[];
-      const where = used.slice(0, 5).map((p) => `• ${p.title || 'Untitled'}`).join('\n');
-      if (!confirm(`“${f.name}” is used in ${used.length} page${used.length === 1 ? '' : 's'}:\n${where}\n\nDelete it anyway? Those pages will show a broken file.`)) return false;
-      try {
-        await api.deleteFile(f.id, true);
-        return true;
-      } catch (err) {
-        onError(errorText(err));
-        return false;
-      }
-    }
-    onError(errorText(e));
-    return false;
   }
 }
 

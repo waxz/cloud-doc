@@ -1,9 +1,9 @@
 import { isRole, type Role, requireProject, requireWorkspace, type WorkspaceRole, visibleProjects } from './access.js';
-import { requireUser, type User } from './auth.js';
+import { requireAdmin, requireUser, type User } from './auth.js';
 import type { Env } from './env.js';
 import { HttpError, json, newId, noContent, readJson, str } from './http.js';
 import { deletePageTree } from './pages.js';
-import { deleteWorkspaceData } from './storage.js';
+import { defaultLimits, deleteWorkspaceData, maxFileBytes, workspaceLimits, workspaceUsage } from './storage.js';
 import { usableStorage } from './settings.js';
 
 // ---------- workspaces and members ----------
@@ -30,8 +30,9 @@ export async function createWorkspace(req: Request, env: Env, u: User | null): P
   if (conflict) throw new HttpError(409, `A workspace named "${name}" already exists in your account`);
   const id = newId();
   const now = Date.now();
+  const limits = await defaultLimits(env); // what the admin has set for new workspaces (a playground, say)
   await env.DB.batch([
-    env.DB.prepare('INSERT INTO workspaces (id, name, created_at) VALUES (?, ?, ?)').bind(id, name, now),
+    env.DB.prepare('INSERT INTO workspaces (id, name, created_at, storage_limit, max_pages) VALUES (?, ?, ?, ?, ?)').bind(id, name, now, limits.storageLimit, limits.maxPages),
     env.DB.prepare("INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, 'owner')").bind(id, user.id),
     env.DB.prepare('INSERT INTO workspace_storage_bindings (workspace_id, storage_id, created_at, granted_user_id) VALUES (?, ?, ?, ?)').bind(
       id,
@@ -284,28 +285,32 @@ const parseDefaultRole = (v: unknown): Role | null => {
 export async function createProject(req: Request, env: Env, u: User | null, wid: string): Promise<Response> {
   const user = requireUser(u);
   await requireWorkspace(env, user, wid);
-  const body = await readJson<{ name?: string; defaultRole?: string | null }>(req);
+  const body = await readJson<{ name?: string; defaultRole?: string | null; readOnly?: boolean }>(req);
   const name = str(body.name, 'name', 80);
   // Absent means open to the workspace as editors; an explicit null makes it private.
   const defaultRole = parseDefaultRole('defaultRole' in body ? body.defaultRole : 'editor');
   const id = newId();
   await env.DB.batch([
-    env.DB.prepare('INSERT INTO projects (id, workspace_id, name, default_role, created_at) VALUES (?, ?, ?, ?, ?)').bind(
+    env.DB.prepare('INSERT INTO projects (id, workspace_id, name, default_role, read_only, created_at) VALUES (?, ?, ?, ?, ?, ?)').bind(
       id,
       wid,
       name,
       defaultRole,
+      body.readOnly ? 1 : 0,
       Date.now()
     ),
     // The creator administers it, even if the project is private.
     env.DB.prepare("INSERT INTO project_members (project_id, user_id, role) VALUES (?, ?, 'admin')").bind(id, user.id),
   ]);
-  return json({ id, name, defaultRole, role: 'admin' }, 201);
+  return json({ id, name, defaultRole, readOnly: !!body.readOnly, role: 'admin' }, 201);
 }
 
 export async function updateProject(req: Request, env: Env, u: User | null, pid: string): Promise<Response> {
   await requireProject(env, requireUser(u), pid, 'admin');
-  const body = await readJson<{ name?: string; defaultRole?: string | null }>(req);
+  const body = await readJson<{ name?: string; defaultRole?: string | null; readOnly?: boolean }>(req);
+  if (typeof body.readOnly === 'boolean') {
+    await env.DB.prepare('UPDATE projects SET read_only = ? WHERE id = ?').bind(body.readOnly ? 1 : 0, pid).run();
+  }
   if (body.name !== undefined) {
     await env.DB.prepare('UPDATE projects SET name = ? WHERE id = ?').bind(str(body.name, 'name', 80), pid).run();
   }
@@ -362,4 +367,35 @@ export async function setProjectMember(req: Request, env: Env, u: User | null, p
     .bind(pid, userId, role)
     .run();
   return noContent();
+}
+
+
+// ---------- usage and limits ----------
+
+/** What a workspace keeps, against its limits (for its owners and admins). */
+export async function getWorkspaceUsage(env: Env, u: User | null, wid: string): Promise<Response> {
+  await requireWorkspace(env, requireUser(u), wid, true);
+  const [usage, limits, cap] = await Promise.all([workspaceUsage(env, wid), workspaceLimits(env, wid), maxFileBytes(env)]);
+  return json({ ...usage, ...limits, maxFileBytes: cap });
+}
+
+const limitValue = (v: unknown, what: string): number | null => {
+  if (v === null || v === '' || v === undefined) return null;
+  const n = Math.floor(Number(v));
+  if (!Number.isFinite(n) || n < 0) throw new HttpError(400, `${what} must be a number, or empty for no limit`);
+  return n === 0 ? null : n;
+};
+
+/** Only the instance admin sets a workspace's limits: an owner could otherwise lift their own. */
+export async function setWorkspaceLimits(req: Request, env: Env, u: User | null, wid: string): Promise<Response> {
+  requireAdmin(u);
+  if (!(await env.DB.prepare('SELECT 1 FROM workspaces WHERE id = ?').bind(wid).first())) throw new HttpError(404, 'no such workspace');
+  const b = await readJson<{ storageLimit?: unknown; maxPages?: unknown }>(req);
+  const cur = await workspaceLimits(env, wid);
+  const next = {
+    storageLimit: 'storageLimit' in b ? limitValue(b.storageLimit, 'the storage limit') : cur.storageLimit,
+    maxPages: 'maxPages' in b ? limitValue(b.maxPages, 'the page limit') : cur.maxPages,
+  };
+  await env.DB.prepare('UPDATE workspaces SET storage_limit = ?, max_pages = ? WHERE id = ?').bind(next.storageLimit, next.maxPages, wid).run();
+  return json(next);
 }

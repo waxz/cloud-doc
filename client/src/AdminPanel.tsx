@@ -23,7 +23,7 @@ import {
 import { useMediaQuery } from '@mantine/hooks';
 import { IconChartBar, IconDatabase, IconCheck, IconCopy, IconLink, IconPlus, IconSettings, IconTrash, IconUserPlus, IconUsers } from '@tabler/icons-react';
 import { useCallback, useEffect, useState } from 'react';
-import { type AdminUser, api, type RegistrationLink, type Storage, type User } from './api';
+import { type AdminUser, api, type InstanceSettings, type RegistrationLink, type Storage, type User } from './api';
 import { href } from './route';
 import { SharedStorages } from './SharedStorages';
 import { UsagePanel } from './UsagePanel';
@@ -141,11 +141,22 @@ export function AdminPanel({ me, opened, onClose, onError }: Props) {
 
 /** The contact email people see on the sign-in page, and the state of recovery mode. */
 function InstanceSettings({ onError }: { onError: (m: string) => void }) {
-  const [saved, setSaved] = useState<{ adminEmail: string; recoveryEnabled: boolean } | null>(null);
+  const [saved, setSaved] = useState<InstanceSettings | null>(null);
   const [email, setEmail] = useState('');
+  const MB = 1048576;
+  const [defStorage, setDefStorage] = useState<number | string>('');
+  const [defPages, setDefPages] = useState<number | string>('');
+  const [fileMb, setFileMb] = useState<number | string>('');
+  const [limitNote, setLimitNote] = useState('');
+  const [rateMin, setRateMin] = useState<number | string>(600);
+  const [rateHour, setRateHour] = useState<number | string>('');
+  const [cap, setCap] = useState<number | string>('');
+  const [workspaces, setWorkspaces] = useState<{ id: string; name: string }[]>([]);
+  const show = (s: InstanceSettings) => (setSaved(s), setEmail(s.adminEmail), setDefStorage(s.defaultStorageLimit ? +(s.defaultStorageLimit / MB).toFixed(2) : ''), setDefPages(s.defaultMaxPages ?? ''), setFileMb(s.maxFileBytes ? +(s.maxFileBytes / MB).toFixed(2) : ''), setRateMin(s.ratePerMinute), setRateHour(s.ratePerHour || ''), setCap(s.playgroundMaxUsers ?? ''));
   const [note, setNote] = useState('');
   useEffect(() => {
-    api.adminSettings().then((s) => (setSaved(s), setEmail(s.adminEmail)), (e) => onError(errorText(e)));
+    api.adminSettings().then(show, (e) => onError(errorText(e)));
+    api.adminWorkspaces().then(setWorkspaces, () => undefined);
   }, [onError]);
   if (!saved) return <Loader size="sm" />;
   return (
@@ -179,6 +190,76 @@ function InstanceSettings({ onError }: { onError: (m: string) => void }) {
           </Group>
         </Stack>
       </form>
+      <form
+        onSubmit={async (e) => {
+          e.preventDefault();
+          const n = (v: number | string) => (v === '' || Number(v) <= 0 ? null : Number(v));
+          try {
+            show(await api.setAdminSettings({
+              defaultStorageLimit: n(defStorage) == null ? null : Math.round(n(defStorage)! * MB),
+              defaultMaxPages: n(defPages) == null ? null : Math.floor(n(defPages)!),
+              maxFileBytes: n(fileMb) == null ? null : Math.round(n(fileMb)! * MB),
+              ratePerMinute: rateMin === '' ? null : Math.max(0, Math.floor(Number(rateMin))),
+              ratePerHour: rateHour === '' ? null : Math.max(0, Math.floor(Number(rateHour))),
+              playgroundMaxUsers: n(cap),
+            }));
+            setLimitNote('Saved.');
+          } catch (err) {
+            setLimitNote('');
+            onError(errorText(err));
+          }
+        }}
+      >
+        <Stack gap="xs">
+          <Text fw={600} size="sm">Limits for a playground</Text>
+          <Text size="sm" c="dimmed">
+            To let people try the app without a risk to your storage or your Cloudflare allowance, give new workspaces a storage limit and a page limit, and cap the size of a single file.
+            Each workspace's own limits (open its settings from the sidebar, as admin) can be changed afterwards. Empty means no limit.
+          </Text>
+          <Group align="end" wrap="wrap">
+            <NumberInput label="New workspaces: storage (MB)" description="Files and page history" min={0} decimalScale={2} value={defStorage} onChange={(v) => (setDefStorage(v), setLimitNote(''))} w={210} />
+            <NumberInput label="New workspaces: pages" min={0} allowDecimal={false} value={defPages} onChange={(v) => (setDefPages(v), setLimitNote(''))} w={170} />
+            <NumberInput label="Largest single file (MB)" description="Applies everywhere" min={0} decimalScale={2} value={fileMb} onChange={(v) => (setFileMb(v), setLimitNote(''))} w={200} />
+            <NumberInput label="Requests per person per minute" description="0 = no limit; admins are exempt" min={0} allowDecimal={false} value={rateMin} onChange={(v) => (setRateMin(v), setLimitNote(''))} w={230} />
+            <NumberInput label="Requests per person per hour" description="Empty or 0 = no limit" min={0} allowDecimal={false} value={rateHour} onChange={(v) => (setRateHour(v), setLimitNote(''))} w={230} />
+            <NumberInput label="Stop open sign-up at (accounts)" description={`Now ${saved.accounts}. Empty = no cap`} min={0} allowDecimal={false} value={cap} onChange={(v) => (setCap(v), setLimitNote(''))} w={230} />
+            <Button type="submit" size="xs">Save limits</Button>
+            {limitNote && <Text size="sm" c="teal">{limitNote}</Text>}
+          </Group>
+        </Stack>
+      </form>
+      <Stack gap="xs">
+        <Switch
+          label="Open registration (playground)"
+          description="Anyone can create an account from the sign-in page, without a registration link. New accounts are plain members of the playground workspace below and cannot create workspaces of their own. Turn it off to close sign-up again; accounts already made keep working."
+          checked={saved.openRegistration}
+          disabled={!saved.playgroundWorkspace}
+          onChange={async (e) => {
+            try {
+              show(await api.setAdminSettings({ openRegistration: e.currentTarget.checked }));
+            } catch (err) {
+              onError(errorText(err));
+            }
+          }}
+        />
+        <Select
+          label="Playground workspace"
+          description="Where new accounts land. Give it limits in its settings, and make its Demo project read-only (project settings); other projects can be edited by any member."
+          placeholder={workspaces.length ? 'Choose a workspace' : 'No workspaces yet'}
+          data={workspaces.map((w) => ({ value: w.id, label: w.name }))}
+          value={saved.playgroundWorkspace}
+          clearable
+          searchable
+          onChange={async (id) => {
+            try {
+              show(await api.setAdminSettings({ playgroundWorkspace: id }));
+            } catch (err) {
+              onError(errorText(err));
+            }
+          }}
+        />
+        {saved.openRegistration && <Badge color="orange" variant="light" w="fit-content">Sign-up is open</Badge>}
+      </Stack>
       <div>
         <Group gap="xs" mb={4}>
           <Text fw={600} size="sm">Recovery mode</Text>

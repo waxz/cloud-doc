@@ -17,7 +17,8 @@ What Cloud Doc does, and what it leaves to you.
 ## What it leaves to you
 
 - There is **no email verification or automatic password reset** (the app sends no email) and **no two-factor sign-in**. The sign-in page shows the admin's contact email, so people who forgot their password can write to the admin, who resets it in the admin panel. A forgotten *admin* password can be recovered with the optional `RECOVERY_SECRET` (see [Deploying](DEPLOY.md#recovery-mode-a-forgotten-admin-password)): guard it like a root password.
-- There is **no rate limit on the API** beyond failed sign-ins. If the instance is public, use Cloudflare's rate-limiting rules or WAF in front of it.
+- **Request limits** are per person (per minute, default 600, and optionally per hour; guests by address; the admin is exempt), counted per isolate and, for the hourly limit, from the usage figures refreshed about every 30 seconds, so they hold to within that delay rather than exactly. For an instance open to the public, also put Cloudflare's rate-limiting rules or WAF in front of it.
+- **Open registration** (the playground switch) lets anyone create an account: it makes plain members who cannot create workspaces, limits sign-ups to five an hour per address and can stop at an account cap. There is no email verification, so treat the playground workspace as public and keep it limited.
 - Keep a copy of `STORAGE_KEY`: without it, saved storage passwords can't be read.
 
 ## Limits worth knowing

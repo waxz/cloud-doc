@@ -68,6 +68,16 @@ The app sends no email, so a forgotten password is normally reset by an admin in
 
 Wrong secrets are limited to 5 tries, then 15 minutes' wait, and every use is written to the Worker's log. Treat the secret like a root password. The admin panel (*Admin → Settings*) also lets you set a **contact email** that the sign-in page shows to everyone who forgot their password.
 
+### A limited playground
+
+To let people try the app safely, open **Admin → Settings**:
+
+1. Create a workspace to be the playground (on a storage you own, or a shared one), add a *Demo* project and mark it **read only** in its project settings; other projects stay editable by every member.
+2. Give new workspaces and this one limits: a storage limit (files and page history) and a page limit, in **Workspace settings** (admin only) or as defaults for new workspaces. Set the **largest single file** and the **requests per person** per minute and per hour.
+3. Pick the **playground workspace** and switch on **open registration**. The sign-in page then offers *Create an account*; new accounts join as members and cannot create workspaces. Set a cap on accounts if you like, and switch it off to close sign-up again.
+
+On the Free plan keep the request limits and the account cap modest: the whole Worker stops answering for the day after 100,000 requests.
+
 ### The storage key
 
 When `STORAGE_KEY` is set, WebDAV passwords are stored encrypted in D1. `npm run dev` and `npm run deploy` create it if it is missing (in `.dev.vars` locally, as a Worker secret when deploying), and they never replace one that exists.

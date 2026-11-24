@@ -114,3 +114,12 @@ Fields are 16px on touch screens so Safari doesn't zoom in when they get focus, 
 
 - **Admin contact email** (*Admin → Settings*): shown on the sign-in page under "Forgot your password?" as a mail link, so people can email the admin to have their password reset.
 - **Recovery mode** for a forgotten admin password: with a `RECOVERY_SECRET` set on the Worker in the Cloudflare dashboard, the sign-in page offers *I am the admin: use recovery mode*. The secret, plus a new password, resets that admin account and signs in. The secret can be changed in the dashboard any time; wrong tries are limited and uses are logged. See [Deploying](DEPLOY.md#recovery-mode-a-forgotten-admin-password).
+
+## Limits and a playground
+
+- **Workspace limits** (*Workspace settings*, set by the instance admin): a storage limit for files and page history, and a page limit. They are checked on uploads, history versions, restores and page creation, and re-checked after the write so a burst of parallel requests can't squeeze past: exactly the ones that fit are kept.
+- **Largest single file** and **defaults for new workspaces** (*Admin → Settings*).
+- **Request limits per person**, per minute (default 600) and per hour; guests are limited by address; the admin is exempt. Over the limit, requests get a 429 with a Retry-After.
+- **Open registration**: a switch in *Admin → Settings*, with the playground workspace new accounts join (as members who cannot create workspaces), five sign-ups an hour per address, and an optional cap on accounts.
+- **Read-only projects** (*Project settings*): everyone with access reads, only workspace and project admins edit. Other projects are editable by any member.
+- **History** keeps the newest 30 automatic versions per page; the *History* panel shows how much a page's history and the workspace use, and can delete one version, the automatic ones, or all of it.

@@ -11,7 +11,7 @@ import {
   visibleProjects,
 } from './access.js';
 import { requireUser, type User } from './auth.js';
-import { deletePageHistory, storageById, WebDav, workspaceOfPage } from './storage.js';
+import { checkPageLimit, deletePageHistory, pastPageLimit, storageById, WebDav, workspaceLimits, workspaceOfPage, workspaceUsage } from './storage.js';
 import { deleteTreeFiles } from './files.js';
 import type { Env } from './env.js';
 import { exportRoom, room, tellRoom } from './rooms.js';
@@ -66,14 +66,21 @@ export async function createPage(req: Request, env: Env, u: User | null, pid: st
     const parent = await env.DB.prepare('SELECT project_id FROM pages WHERE id = ?').bind(parentId).first<{ project_id: string }>();
     if (parent?.project_id !== pid) throw new HttpError(400, 'parent page is not in this project');
   }
+  const workspace = await env.DB.prepare('SELECT workspace_id FROM projects WHERE id = ?').bind(pid).first<{ workspace_id: string }>();
+  if (workspace) await checkPageLimit(env, workspace.workspace_id);
   const now = Date.now();
   const row = await env.DB.prepare(
     `INSERT INTO pages (id, project_id, parent_id, title, position, created_by, created_at, updated_at)
      VALUES (?, ?, ?, '', (SELECT COALESCE(MAX(position), 0) + 1 FROM pages WHERE project_id = ? AND parent_id IS ?), ?, ?, ?)
-     RETURNING ${PAGE_COLS}`
+     RETURNING ${PAGE_COLS}, created_at`
   )
     .bind(newId(), pid, parentId, pid, parentId, user.id, now, now)
-    .first();
+    .first<{ id: string; created_at: number }>();
+  // Several pages made at once could each fit the limit and together not: look again now this one is counted.
+  if (row && workspace && (await pastPageLimit(env, workspace.workspace_id, row.id))) {
+    await env.DB.prepare('DELETE FROM pages WHERE id = ?').bind(row.id).run();
+    throw new HttpError(403, 'this workspace has reached its page limit');
+  }
   return json(row, 201);
 }
 
@@ -216,6 +223,70 @@ async function requireHistoryAccess(req: Request, env: Env, u: User | null, id: 
   const access = await requirePage(req, env, u, id, 'viewer');
   if (access.viaShare) throw new HttpError(403, 'history is only available to project members');
   return access;
+}
+
+/** How much this page's history takes up, and what the whole workspace has used of its storage limit. */
+export async function historyUsage(req: Request, env: Env, u: User | null, id: string): Promise<Response> {
+  await requireHistoryAccess(req, env, u, id);
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) AS versions, COALESCE(SUM(size), 0) AS bytes,
+            COALESCE(SUM(kind = 'auto'), 0) AS auto_versions, COALESCE(SUM(CASE WHEN kind = 'auto' THEN size END), 0) AS auto_bytes
+     FROM page_versions WHERE page_id = ?`
+  )
+    .bind(id)
+    .first<{ versions: number; bytes: number; auto_versions: number; auto_bytes: number }>();
+  const wid = await workspaceOfPage(env, id);
+  const [usage, limits] = await Promise.all([workspaceUsage(env, wid), workspaceLimits(env, wid)]);
+  return json({
+    versions: row?.versions ?? 0,
+    bytes: row?.bytes ?? 0,
+    autoVersions: row?.auto_versions ?? 0,
+    autoBytes: row?.auto_bytes ?? 0,
+    workspaceBytes: usage.bytes,
+    storageLimit: limits.storageLimit,
+  });
+}
+
+/** Removes versions from the storage and the list. A few at a time: each is one request to the storage. */
+async function dropVersions(env: Env, rows: { id: string; storage_key: string; storage_id: string | null }[]): Promise<void> {
+  const storages = new Map<string, Awaited<ReturnType<typeof storageById>>>();
+  for (const v of rows) {
+    if (v.storage_id) {
+      if (!storages.has(v.storage_id)) storages.set(v.storage_id, await storageById(env, v.storage_id));
+      const storage = storages.get(v.storage_id);
+      if (storage) await new WebDav(storage).delete(v.storage_key).catch((err) => console.error('version cleanup failed', err));
+    }
+  }
+  if (rows.length) await env.DB.batch(rows.map((v) => env.DB.prepare('DELETE FROM page_versions WHERE id = ?').bind(v.id)));
+}
+
+const CLEAR_STEP = 20;
+
+/**
+ * Frees the space history takes: `?scope=auto` removes the automatic versions (named ones stay), `?scope=all` removes
+ * every version. Removes up to CLEAR_STEP per call and says how many are left, so the caller repeats until zero.
+ */
+export async function clearHistory(req: Request, env: Env, u: User | null, id: string): Promise<Response> {
+  await requireHistoryAccess(req, env, u, id);
+  await requirePage(req, env, u, id, 'editor');
+  const scope = new URL(req.url).searchParams.get('scope') === 'all' ? 'all' : 'auto';
+  const where = scope === 'all' ? 'page_id = ?1' : "page_id = ?1 AND kind = 'auto'";
+  const { results } = await env.DB.prepare(`SELECT id, storage_key, storage_id, size FROM page_versions WHERE ${where} ORDER BY created_at LIMIT ${CLEAR_STEP}`)
+    .bind(id)
+    .all<{ id: string; storage_key: string; storage_id: string | null; size: number }>();
+  await dropVersions(env, results);
+  const left = await env.DB.prepare(`SELECT COUNT(*) AS n FROM page_versions WHERE ${where}`).bind(id).first<{ n: number }>();
+  return json({ deleted: results.length, freed: results.reduce((n, v) => n + v.size, 0), remaining: left?.n ?? 0 });
+}
+
+/** Removes one version. */
+export async function deleteVersion(req: Request, env: Env, u: User | null, id: string, vid: string): Promise<Response> {
+  await requireHistoryAccess(req, env, u, id);
+  await requirePage(req, env, u, id, 'editor');
+  const row = await env.DB.prepare('SELECT id, storage_key, storage_id FROM page_versions WHERE id = ? AND page_id = ?').bind(vid, id).first<{ id: string; storage_key: string; storage_id: string | null }>();
+  if (!row) throw new HttpError(404, 'no such version');
+  await dropVersions(env, [row]);
+  return noContent();
 }
 
 export async function listVersions(req: Request, env: Env, u: User | null, id: string): Promise<Response> {

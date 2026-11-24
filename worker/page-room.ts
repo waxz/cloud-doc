@@ -5,7 +5,7 @@ import { type Role, atLeast } from './access.js';
 import type { Env } from './env.js';
 import { useStorageKey } from './secret.js';
 import { HttpError, json, newId } from './http.js';
-import { WebDav, checkQuota, historyKey, resolveStorage, storageById, workspaceOfPage } from './storage.js';
+import { WebDav, checkQuota, checkWorkspaceQuota, historyKey, resolveStorage, storageById, workspaceOfPage, pastStorageLimit } from './storage.js';
 import { fileIdsIn, syncFileRefs } from './files.js';
 import { deriveId, fileIdsInText, rewriteDocument } from './rewrite.js';
 
@@ -17,6 +17,8 @@ export const NAME_HEADER = 'x-wiki-name';
 
 const CHUNK = 1024 * 1024; // SQLite rows are capped at 2 MB, so state is stored in chunks.
 const AUTO_SNAPSHOT_EVERY = 10 * 60 * 1000;
+/** How many automatic history versions a page keeps. */
+const AUTO_KEEP = 30;
 /**
  * Search text, title and file references go to D1 (FTS5 rows are many rows written each), so while a
  * page is open they are refreshed at most this often, and at once when the last person leaves.
@@ -313,6 +315,7 @@ export class PageRoom extends YServer<Env> {
     }
     try {
       await checkQuota(this.env, storage, owner!, workspaceId, state.byteLength);
+      await checkWorkspaceQuota(this.env, workspaceId, state.byteLength);
     } catch (err) {
       if (kind === 'auto') return null;
       throw err;
@@ -327,11 +330,36 @@ export class PageRoom extends YServer<Env> {
     )
       .bind(id, kind, version.title, by, version.size, key, storage.id, owner, version.created_at, this.name)
       .run();
+    // Concurrent writes can each pass the check and together not: look again, and take this one back if so.
+    if (await pastStorageLimit(this.env, workspaceId, 'version', id)) {
+      await this.env.DB.prepare('DELETE FROM page_versions WHERE id = ?').bind(id).run();
+      await new WebDav(storage).delete(key).catch(() => undefined);
+      if (kind === 'auto') return null;
+      throw new HttpError(413, "this workspace's storage limit is reached");
+    }
+    if (kind === 'auto') await this.pruneAuto().catch((err) => console.error('pruning history failed', err));
     this.ensureTables();
     this.setKv('last_snapshot_at', String(version.created_at));
     this.setKv('last_snapshot_sv', this.stateVector());
     this.broadcastCustomMessage(JSON.stringify({ type: 'history' }));
     return version;
+  }
+
+  /**
+   * Automatic history is a rolling window: only the newest AUTO_KEEP automatic versions stay (named versions and
+   * the copy kept before a restore stay for ever), so a page being edited for a year doesn't fill the storage.
+   */
+  private async pruneAuto(): Promise<void> {
+    const { results } = await this.env.DB.prepare(
+      "SELECT id, storage_key, storage_id FROM page_versions WHERE page_id = ? AND kind = 'auto' ORDER BY created_at DESC LIMIT 10 OFFSET ?"
+    )
+      .bind(this.name, AUTO_KEEP)
+      .all<{ id: string; storage_key: string; storage_id: string | null }>();
+    for (const old of results) {
+      const storage = await storageById(this.env, old.storage_id);
+      if (storage) await new WebDav(storage).delete(old.storage_key).catch(() => undefined);
+      await this.env.DB.prepare('DELETE FROM page_versions WHERE id = ?').bind(old.id).run();
+    }
   }
 
   /**

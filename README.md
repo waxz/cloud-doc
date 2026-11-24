@@ -4,7 +4,7 @@
 
 **A collaborative wiki that runs on Cloudflare, with comments you can think with, and files that stay in drives you choose.**
 
-Real-time editing · Notion-style highlights and discussion · Workspaces and permissions · Zero servers to run
+Real-time editing · Notion-style highlights and discussion · Article layouts and columns · Workspaces and permissions · A limited playground for recruiting users · Zero servers to run
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/waxz/cloud-doc)
 
@@ -85,6 +85,10 @@ A file can be used by many pages and survives them. The workspace's **Files** wi
 </tr>
 </table>
 
+### Lay a page out like an article
+
+Switch a page to the **Article** layout (serif reading style, roomy lines) from the *Page layout* button. Then arrange it the way Anytype does: drag any block by its handle to the **left or right edge** of another block and the two sit **side by side**, up to four columns; drag the gap between columns to resize them. Pictures have **S / M / L / XL** size buttons. It works for every kind of block, nothing wraps around anything, everyone sees it live, and on a phone the columns simply stack. The reading column keeps the same width in every mode.
+
 ### Find it fast
 
 Search across everything you can see. Each page shows the matches with their context; click one and you land on that exact spot. `Ctrl/Cmd+K` from anywhere.
@@ -101,6 +105,22 @@ The admin shares storage of their own with chosen people, each with a limit, and
 <td width="50%"><img src="docs/screenshots/admin-usage.png" alt="Admin: usage per user"></td>
 </tr>
 </table>
+
+### Run a limited playground
+
+Want people to try Cloud Doc without risking your storage or your Cloudflare allowance? In **Admin → Settings** switch on **open registration**, pick the *playground workspace* new accounts join, and set the limits:
+
+- **Per workspace** (also in *Workspace settings*): a storage limit for files and page history, and a page limit. Limits are enforced for uploads, history, imports and page creation, and hold under parallel bursts.
+- **One file** may not weigh more than the size you set; automatic history keeps only the newest 30 versions per page, and a page's *History* panel shows what it takes and has buttons to clear it.
+- **Per person**: requests per minute (default 600) and per hour; guests are limited by address; the admin is exempt.
+- **Sign-up**: five accounts an hour per address, an optional cap on accounts, and new accounts are plain members who **cannot create workspaces**.
+- **Read-only projects**: mark a *Demo* project read only and members can read but not edit it, while every other project stays editable by any member.
+
+Guests who open a share link read a **snapshot** over HTTP: no live connection, no cost to the live room, and they never appear in anyone's list of who is on the page.
+
+### Your data stays portable
+
+A storage is a **server URL plus a folder**; *Test* checks the server and then the folder, and creates the folder if it is missing. From *Workspace settings* the owner can **move** all files and history to another storage, **back up** a whole workspace to one of their storages (readable JSON, page documents and your files), and **restore** it as a new workspace, even on another instance.
 
 ### On every screen
 
@@ -120,12 +140,14 @@ A phone-first layout (slide-out page tree, bottom-sheet panels), a hideable page
 | **Editing** | Real-time collaboration with live cursors · block editor · tables, code, LaTeX · inline PDFs that fit the page, with zoom, fit and page-jump tools (and highlights drawn on them), images, video, audio · undo/redo of your own changes · `Ctrl+S` versions · outline and word count |
 | **Comments** | Highlights (4 shapes, 7 colours) in page order and a page-level discussion by thread · replies, resolve, search · rich text with links, tables and images · `@members` and `#tags` as filters · links that jump to the highlighted text |
 | **Files** | Workspace-level files shared between pages · usage tracking · warnings before deleting something in use · delete-with-the-page choice |
-| **Structure** | Workspaces → projects → nested pages · drag and drop · emoji icons · favorites · roles per project (viewer, commenter, editor, admin) |
+| **Layout** | Article (serif) page style · drag blocks side by side into columns, drag to resize · picture sizes · one reading width everywhere · columns stack on phones |
+| **Structure** | Workspaces → projects → nested pages · collapsible projects · drag and drop · emoji icons · favorites · roles per project (viewer, commenter, editor, admin) · **read-only projects** |
 | **Sharing** | Links for view, comment or edit, with subpages and expiry · view links publish a page without sign-in |
 | **History** | Automatic and named versions, preview and restore, kept in your storage |
-| **Search** | Accent-insensitive prefix search with in-context matches that jump to the spot |
-| **Storage** | Per-workspace WebDAV storage · shared storages with per-user limits · encrypted credentials |
-| **Admin** | Accounts and registration links that can add people to a workspace with a shared storage · shared storages · per-user usage, request rate and errors |
+| **Search** | Accent-insensitive prefix search with in-context matches that jump to the spot · or an instant filter by page title |
+| **Storage** | Per-workspace WebDAV storage (server URL + folder, created for you) · shared storages with per-user limits · **per-workspace storage and page limits** · move, back up and restore a workspace · encrypted credentials |
+| **Admin** | Accounts and registration links that can add people to a workspace with a shared storage · shared storages · per-user usage, request rate and errors · **open registration switch for a playground** with limits, request limits and an account cap · contact email on the sign-in page |
+| **Sign-in** | Admin contact email for forgotten passwords · **recovery mode** (a `RECOVERY_SECRET` you set in the Cloudflare dashboard) for a forgotten admin password · guests read a snapshot with no live connection |
 | **Everywhere** | Responsive layout for phones and tablets · dark theme · export to Markdown, HTML or PDF |
 
 The full tour is in **[docs/FEATURES.md](docs/FEATURES.md)**.
@@ -148,7 +170,8 @@ The full tour is in **[docs/FEATURES.md](docs/FEATURES.md)**.
 | Tables, code, LaTeX, PDFs, media | ✅ | ✅ |
 | Diagrams (draw.io, Excalidraw, Mermaid) | ➖ | ✅ |
 | Embeds (Airtable, Loom, Miro, …) | ➖ | ✅ |
-| Callouts, columns, tabs, table-of-contents block | ➖ | ✅ |
+| Columns: drag a block beside another, resize | ✅ | ✅ |
+| Callouts, tabs, table-of-contents block | ➖ | ✅ |
 | Outline panel, favorites, Markdown / PDF export | ✅ | ✅ |
 | **Comments** | | |
 | Comments and replies, resolve | ✅ | ✅ |
@@ -165,6 +188,9 @@ The full tour is in **[docs/FEATURES.md](docs/FEATURES.md)**.
 | Groups | ➖ | ✅ |
 | SSO / enterprise sign-in | ➖ | ✅ (some in the Enterprise edition) |
 | Admin usage panel (storage, requests, rate per user) | ✅ | ➖ |
+| Read-only projects | ✅ | ➖ |
+| Limited playground: open sign-up, workspace quotas, request limits | ✅ | ➖ |
+| Move or back up a workspace between storages | ✅ | ➖ |
 | **Polish** | | |
 | Translations | ➖ English | ✅ 10+ |
 | Page covers, labels, trash, duplicate page, templates | ➖ | ✅ |
@@ -184,6 +210,8 @@ npm install
 npm run deploy
 ```
 
+Optional, but worth doing once: set a `RECOVERY_SECRET` (16+ characters) in the Cloudflare dashboard so a forgotten admin password can be recovered from the sign-in page ([how](docs/DEPLOY.md#recovery-mode-a-forgotten-admin-password)).
+
 Run it locally with `npm run dev` ([developer guide](docs/DEVELOPMENT.md)).
 
 ## How it works
@@ -191,10 +219,13 @@ Run it locally with `npm run dev` ([developer guide](docs/DEVELOPMENT.md)).
 ```
  browser ──HTTP──▶ Worker ── checks access ──▶ D1   (accounts, permissions, comments, search)
     │                 └──────────────────────▶ the workspace's WebDAV storage (files, history)
+    │                 (every /api request first passes a per-person rate limit)
+    ├─guests (no account)──▶ one HTTP snapshot of the page: no live connection
     └─WebSocket─▶ Worker ── role ──▶ PageRoom Durable Object (one per page)
                                        ├─ Yjs sync + presence (read-only for viewers)
                                        ├─ saves the page to its own SQLite storage
-                                       ├─ on save: title + text → D1 search, file usage
+                                       ├─ one editor or readers only: cursors off, edits batched; two editors: live
+                                       ├─ title + text → D1 search, file usage (at most once a minute)
                                        └─ snapshots → the workspace's storage
 ```
 
@@ -217,9 +248,13 @@ Cloud Doc is young. What's done, and what comes next, roughly in order.
 - [x] Storage per workspace, shared storages with per-user limits, encrypted credentials
 - [x] Search with in-context matches, outline, favorites, export, undo/redo, dark theme, phone layout
 - [x] Admin usage panel, security headers, sandboxed uploads
+- [x] Article layout, columns by drag and drop, picture sizes, read-only projects
+- [x] **Limited playground**: open registration switch, workspace storage and page limits, file cap, request limits, history usage and clearing
+- [x] Move, back up and restore a workspace between storages; storage as server URL + folder
+- [x] Admin contact email on the sign-in page and a recovery mode for the admin password
+- [x] Fewer requests for the Free plan: live/quiet collaboration, guests on snapshots, quiet housekeeping
 
 **Next**
-- [ ] **Open sign-up** switch for admins (sign-up is by registration link only today)
 - [ ] **Trash**: restore deleted pages (deleting is permanent today)
 - [ ] **Diagrams**: Mermaid and draw.io blocks
 - [ ] **Callout** and **table-of-contents** blocks
@@ -227,7 +262,7 @@ Cloud Doc is young. What's done, and what comes next, roughly in order.
 - [ ] **Groups**: give access to many people at once
 
 **Later**
-- [ ] Email: invites, password reset and notifications (through Cloudflare Email or an SMTP relay)
+- [ ] Email: invites, automatic password reset and notifications (through Cloudflare Email or an SMTP relay)
 - [ ] Single sign-on (OIDC) and two-factor sign-in
 - [ ] Page templates and covers
 - [ ] Translations (the interface is English only today)
@@ -238,7 +273,7 @@ Have an idea or a missing piece? Open an issue.
 
 ## Security
 
-Access is checked on the server for every request; live sync gets its role from the Worker, never from the client. Uploaded files are served sandboxed, comments never render raw HTML, the app ships a strict content-security policy, and saved storage passwords are encrypted with a key only your Worker holds. What the app leaves to you (no email verification or two-factor sign-in, no API rate limit beyond failed sign-ins) is spelled out in **[docs/SECURITY.md](docs/SECURITY.md)**.
+Access is checked on the server for every request; live sync gets its role from the Worker, never from the client. Uploaded files are served sandboxed, comments never render raw HTML, the app ships a strict content-security policy, and saved storage passwords are encrypted with a key only your Worker holds. Requests are limited per person, rooms refuse floods, and guests never open a live connection. What the app leaves to you (no email verification or two-factor sign-in) is spelled out in **[docs/SECURITY.md](docs/SECURITY.md)**.
 
 ## Documentation
 
@@ -247,4 +282,5 @@ Access is checked on the server for every request; live sync gets its role from 
 | [docs/FEATURES.md](docs/FEATURES.md) | Everything it does, in detail |
 | [docs/DEPLOY.md](docs/DEPLOY.md) | Deploying, configuration, the storage key, the Free plan |
 | [docs/SECURITY.md](docs/SECURITY.md) | What is protected and what is left to you |
+| [docs/AUDIT.md](docs/AUDIT.md) | Performance and safety audit, and what was fixed for the Free plan |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Running locally, tests, project layout, regenerating screenshots |

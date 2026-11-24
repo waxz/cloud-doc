@@ -1,5 +1,6 @@
 import type { Env } from './env.js';
 import { cookie, getCookie, HttpError, json, newId, randomToken, readJson, sha256Hex, str } from './http.js';
+import { signupAllowed } from './ratelimit.js';
 
 export interface User {
   id: string;
@@ -113,9 +114,27 @@ export async function getAppSetting(env: Env, key: string): Promise<string> {
   return (await env.DB.prepare('SELECT value FROM app_settings WHERE key = ?').bind(key).first<{ value: string }>())?.value ?? '';
 }
 
-/** What the sign-in page needs before anyone is signed in: the admin's contact email, and whether recovery mode exists. */
+/**
+ * Open registration (a limited playground): on when the admin has switched it on, picked the workspace new accounts
+ * join, and the optional cap on accounts is not reached. Returns that workspace's id.
+ */
+async function openSignupWorkspace(env: Env): Promise<string | null> {
+  if ((await getAppSetting(env, 'open_registration')) !== '1') return null;
+  const wid = await getAppSetting(env, 'playground_workspace');
+  if (!wid || !(await env.DB.prepare('SELECT 1 FROM workspaces WHERE id = ?').bind(wid).first())) return null;
+  const cap = Number(await getAppSetting(env, 'playground_max_users'));
+  if (cap > 0 && ((await env.DB.prepare('SELECT COUNT(*) AS n FROM users').first<{ n: number }>())?.n ?? 0) >= cap) return null;
+  return wid;
+}
+
+/** What the sign-in page needs before anyone is signed in: the admin's contact email, recovery mode, and open registration. */
 export async function authStatus(env: Env): Promise<Response> {
-  return json({ setup: await needsSetup(env), adminEmail: await getAppSetting(env, 'admin_email'), recovery: recoveryEnabled(env) });
+  return json({
+    setup: await needsSetup(env),
+    adminEmail: await getAppSetting(env, 'admin_email'),
+    recovery: recoveryEnabled(env),
+    openSignup: !!(await openSignupWorkspace(env)),
+  });
 }
 
 /** Constant-time comparison of two secrets (both are hashed first, so length doesn't leak either). */
@@ -213,7 +232,12 @@ export async function signup(req: Request, env: Env): Promise<Response> {
   const body = await readJson<{ email?: string; name?: string; password?: string; token?: string }>(req);
   const first = await needsSetup(env);
   const link = first ? null : body.token ? await validLink(env, body.token) : null;
-  if (!first && !link) throw new HttpError(403, 'sign-up needs a registration link from an admin');
+  // No link: open registration, if the admin switched it on for a playground.
+  const playground = !first && !link ? await openSignupWorkspace(env) : null;
+  if (!first && !link && !playground) {
+    throw new HttpError(403, (await getAppSetting(env, 'open_registration')) === '1' ? 'the playground is full or closed for now' : 'sign-up needs a registration link from an admin');
+  }
+  if (playground && !signupAllowed(req)) throw new HttpError(429, 'too many accounts were created from your address: try again later');
   const email = str(body.email, 'email').toLowerCase();
   if (link?.email && link.email.toLowerCase() !== email) throw new HttpError(400, `this link is for ${link.email}`);
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new HttpError(400, 'invalid email');
@@ -235,14 +259,19 @@ export async function signup(req: Request, env: Env): Promise<Response> {
   }
   try {
     await env.DB.batch([
-      env.DB.prepare('INSERT INTO users (id, email, name, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?, ?)').bind(
+      // Playground accounts are plain members who can't make workspaces of their own: they use the one they joined.
+      env.DB.prepare('INSERT INTO users (id, email, name, password_hash, role, can_create_workspaces, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(
         user.id,
         email,
         name,
         await hashPassword(env, password),
         user.role,
+        playground ? 0 : 1,
         Date.now()
       ),
+      ...(playground
+        ? [env.DB.prepare("INSERT OR IGNORE INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, 'member')").bind(playground, user.id)]
+        : []),
       // Workspaces that invited this email before the account existed.
       env.DB.prepare(
         `INSERT INTO workspace_members (workspace_id, user_id, role)

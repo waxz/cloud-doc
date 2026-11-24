@@ -5,7 +5,7 @@ import { HttpError, json, newId, readJson, str } from './http.js';
 import { exportRoom, loadRoom } from './rooms.js';
 import { deriveId, mapFileUrls } from './rewrite.js';
 import { usableStorage } from './settings.js';
-import { checkQuota, fileKey, historyKey, storageById, WebDav, type StorageRow } from './storage.js';
+import { checkPageLimit, checkQuota, checkWorkspaceQuota, defaultLimits, fileKey, historyKey, storageById, WebDav, type StorageRow } from './storage.js';
 
 /**
  * Moving a workspace between storages, and backing it up to one and restoring it from one.
@@ -400,8 +400,9 @@ export async function importStep(req: Request, env: Env, u: User | null): Promis
     }
     const wid = newId();
     const now = Date.now();
+    const limits = await defaultLimits(env);
     const stmts = [
-      env.DB.prepare('INSERT INTO workspaces (id, name, created_at) VALUES (?, ?, ?)').bind(wid, name, now),
+      env.DB.prepare('INSERT INTO workspaces (id, name, created_at, storage_limit, max_pages) VALUES (?, ?, ?, ?, ?)').bind(wid, name, now, limits.storageLimit, limits.maxPages),
       env.DB.prepare("INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, 'owner')").bind(wid, user.id),
       env.DB.prepare('INSERT INTO workspace_storage_bindings (workspace_id, storage_id, created_at, granted_user_id) VALUES (?, ?, ?, ?)').bind(
         wid,
@@ -444,6 +445,7 @@ export async function importStep(req: Request, env: Env, u: User | null): Promis
     const ready: { oldId: string; id: string }[] = [];
     for (const r of rows) {
       try {
+        await checkPageLimit(env, wid);
         const id = await d(r.id);
         const parent = r.parent_id ? await d(r.parent_id) : null;
         await env.DB.prepare(
@@ -532,6 +534,7 @@ export async function importStep(req: Request, env: Env, u: User | null): Promis
         const size = int(r.size) ?? 0;
         if (bytes >= BYTE_BUDGET) throw new Error('left for the next step');
         await checkQuota(env, target, user.id, wid, size);
+        await checkWorkspaceQuota(env, wid, size);
         const blob = await from.get(`${base}/${isFiles ? 'files' : 'history'}/${r.id}`);
         if (!blob.ok) throw new Error(`missing from the backup (${blob.status})`);
         const id = await d(r.id);

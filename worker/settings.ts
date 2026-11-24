@@ -1,5 +1,6 @@
 import { sealPassword } from './secret.js';
 import { getAppSetting, hashPassword, recoveryEnabled, requireAdmin, requireUser, type User, verifyPassword } from './auth.js';
+import { forgetRateLimits } from './ratelimit.js';
 import type { Env } from './env.js';
 import { HttpError, json, newId, noContent, randomToken, readJson, str } from './http.js';
 import { cleanPath, joinUrl, probeStorage, sharedUsage, splitUrl, storageById, usage, WebDav } from './storage.js';
@@ -560,20 +561,91 @@ export async function adminRemoveGrant(env: Env, user: User | null, sid: string,
 
 // ---------- admin: instance settings ----------
 
-/** The contact email shown on the sign-in page, and whether recovery mode is switched on. */
+/** The sign-in contact email, whether recovery mode is on, and the limits for a playground. */
+async function instanceSettings(env: Env) {
+  const num = async (key: string) => {
+    const n = Number(await getAppSetting(env, key));
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+  };
+  return {
+    adminEmail: await getAppSetting(env, 'admin_email'),
+    recoveryEnabled: recoveryEnabled(env),
+    /** Limits every NEW workspace starts with (existing ones keep theirs; change those in Workspace settings). */
+    defaultStorageLimit: await num('default_storage_limit'),
+    defaultMaxPages: await num('default_max_pages'),
+    /** The most one uploaded file may weigh, anywhere on this instance. */
+    maxFileBytes: await num('max_file_bytes'),
+    /** Requests one person may make per minute (default 600; 0 = no limit) and per hour (0 = no limit). The admin is exempt. */
+    ratePerMinute: (await getAppSetting(env, 'rate_per_minute')) === '' ? 600 : Number(await getAppSetting(env, 'rate_per_minute')),
+    ratePerHour: Number((await getAppSetting(env, 'rate_per_hour')) || 0),
+    /** Open registration for a playground: anyone may create an account, which joins `playgroundWorkspace` as a member. */
+    openRegistration: (await getAppSetting(env, 'open_registration')) === '1',
+    playgroundWorkspace: (await getAppSetting(env, 'playground_workspace')) || null,
+    playgroundMaxUsers: await num('playground_max_users'),
+    accounts: (await env.DB.prepare('SELECT COUNT(*) AS n FROM users').first<{ n: number }>())?.n ?? 0,
+  };
+}
+
 export async function adminGetSettings(env: Env, user: User | null): Promise<Response> {
   requireAdmin(user);
-  return json({ adminEmail: await getAppSetting(env, 'admin_email'), recoveryEnabled: recoveryEnabled(env) });
+  return json(await instanceSettings(env));
 }
+
+const setting = async (env: Env, key: string, value: string | null) => {
+  if (value) await env.DB.prepare('INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value').bind(key, value).run();
+  else await env.DB.prepare('DELETE FROM app_settings WHERE key = ?').bind(key).run();
+};
+
+const limitSetting = (v: unknown, what: string): string | null => {
+  if (v === null || v === '' || v === undefined || v === 0) return null;
+  const n = Math.floor(Number(v));
+  if (!Number.isFinite(n) || n < 0) throw new HttpError(400, `${what} must be a number, or empty for no limit`);
+  return n ? String(n) : null;
+};
 
 export async function adminSetSettings(req: Request, env: Env, user: User | null): Promise<Response> {
   requireAdmin(user);
-  const b = await readJson<{ adminEmail?: string }>(req);
+  const b = await readJson<{
+    adminEmail?: string;
+    defaultStorageLimit?: unknown;
+    defaultMaxPages?: unknown;
+    maxFileBytes?: unknown;
+    ratePerMinute?: unknown;
+    ratePerHour?: unknown;
+    openRegistration?: unknown;
+    playgroundWorkspace?: unknown;
+    playgroundMaxUsers?: unknown;
+  }>(req);
   if (b.adminEmail !== undefined) {
     const email = typeof b.adminEmail === 'string' ? b.adminEmail.trim() : '';
     if (email && (email.length > 200 || !/^[^\s@,;<>]+@[^\s@,;<>]+\.[^\s@,;<>]+$/.test(email))) throw new HttpError(400, 'that is not a valid email address');
-    if (email) await env.DB.prepare('INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value').bind('admin_email', email).run();
-    else await env.DB.prepare("DELETE FROM app_settings WHERE key = 'admin_email'").run();
+    await setting(env, 'admin_email', email || null);
   }
-  return json({ adminEmail: await getAppSetting(env, 'admin_email'), recoveryEnabled: recoveryEnabled(env) });
+  if ('defaultStorageLimit' in b) await setting(env, 'default_storage_limit', limitSetting(b.defaultStorageLimit, 'the storage limit'));
+  if ('defaultMaxPages' in b) await setting(env, 'default_max_pages', limitSetting(b.defaultMaxPages, 'the page limit'));
+  if ('maxFileBytes' in b) await setting(env, 'max_file_bytes', limitSetting(b.maxFileBytes, 'the file size limit'));
+  for (const [field, key, what] of [['ratePerMinute', 'rate_per_minute', 'the per-minute limit'], ['ratePerHour', 'rate_per_hour', 'the per-hour limit']] as const) {
+    if (field in b) {
+      const v = b[field];
+      if (v === null || v === '' || v === undefined) await setting(env, key, null); // back to the default
+      else {
+        const n = Math.floor(Number(v));
+        if (!Number.isFinite(n) || n < 0) throw new HttpError(400, `${what} must be a number (0 = no limit)`);
+        await env.DB.prepare('INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value').bind(key, String(n)).run();
+      }
+    }
+  }
+  forgetRateLimits();
+  if ('playgroundWorkspace' in b) {
+    const id = typeof b.playgroundWorkspace === 'string' ? b.playgroundWorkspace : '';
+    if (id && !(await env.DB.prepare('SELECT 1 FROM workspaces WHERE id = ?').bind(id).first())) throw new HttpError(404, 'no such workspace');
+    await setting(env, 'playground_workspace', id || null);
+    if (!id) await setting(env, 'open_registration', null); // nothing to join: registration closes
+  }
+  if ('playgroundMaxUsers' in b) await setting(env, 'playground_max_users', limitSetting(b.playgroundMaxUsers, 'the account limit'));
+  if ('openRegistration' in b) {
+    if (b.openRegistration === true && !(await getAppSetting(env, 'playground_workspace'))) throw new HttpError(400, 'choose the playground workspace new accounts will join before opening registration');
+    await setting(env, 'open_registration', b.openRegistration === true ? '1' : null);
+  }
+  return json(await instanceSettings(env));
 }

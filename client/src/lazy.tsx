@@ -7,6 +7,7 @@ export const PageView = lazy(() => import('./PageView').then((m) => ({ default: 
 export const AdminPanel = lazy(() => import('./AdminPanel').then((m) => ({ default: m.AdminPanel })));
 export const WorkspaceSettings = lazy(() => import('./Settings').then((m) => ({ default: m.WorkspaceSettings })));
 export const ProjectSettings = lazy(() => import('./Settings').then((m) => ({ default: m.ProjectSettings })));
+export const WorkspaceFiles = lazy(() => import('./WorkspaceFiles').then((m) => ({ default: m.WorkspaceFiles })));
 export const UserSettings = lazy(() => import('./UserSettings').then((m) => ({ default: m.UserSettings })));
 
 // Start fetching the editor's code at once when the URL is a page, rather than after the sidebar mounts.

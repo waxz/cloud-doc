@@ -1,3 +1,4 @@
+import { ApiError, api } from './api';
 const COLORS = ['#e8590c', '#2f9e44', '#1971c2', '#9c36b5', '#c2255c', '#0c8599', '#f08c00', '#5f3dc4'];
 
 /** A stable cursor/avatar color per person. */
@@ -129,3 +130,38 @@ export function setHighlightOrder(order: HighlightOrder): void {
     /* the choice just won't be remembered */
   }
 }
+
+/** The block type for an uploaded file. */
+export function blockTypeFor(mime: string): 'image' | 'video' | 'audio' | 'pdf' | 'file' {
+  if (mime.startsWith('image/')) return 'image';
+  if (mime.startsWith('video/')) return 'video';
+  if (mime.startsWith('audio/')) return 'audio';
+  if (mime === 'application/pdf') return 'pdf';
+  return 'file';
+}
+
+/**
+ * Deletes a file, asking first when pages still use it (the answer lists them). Resolves true when it was deleted.
+ */
+export async function deleteFileAsking(f: { id: string; name: string }, onError: (m: string) => void): Promise<boolean> {
+  try {
+    await api.deleteFile(f.id);
+    return true;
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 409 && Array.isArray(e.data.used_in)) {
+      const used = e.data.used_in as { id: string; title: string }[];
+      const where = used.slice(0, 5).map((p) => `• ${p.title || 'Untitled'}`).join('\n');
+      if (!confirm(`“${f.name}” is used in ${used.length} page${used.length === 1 ? '' : 's'}:\n${where}\n\nDelete it anyway? Those pages will show a broken file.`)) return false;
+      try {
+        await api.deleteFile(f.id, true);
+        return true;
+      } catch (err) {
+        onError(errorText(err));
+        return false;
+      }
+    }
+    onError(errorText(e));
+    return false;
+  }
+}
+
