@@ -1117,7 +1117,7 @@ export function PageEditor({ pageId, me, canEdit, canComment, dark, onTitle, onI
       </div>
       <PageContext.Provider value={{ pageId, canComment: canComment && !!onComment }}>
       <BlockNoteView editor={editor} theme={dark ? 'dark' : 'light'} editable={editable} formattingToolbar={false} slashMenu={false}>
-        <FormattingToolbarController formattingToolbar={toolbar} />
+        {editable && <FormattingToolbarController formattingToolbar={toolbar} />}
         <SuggestionMenuController
           triggerCharacter="/"
           getItems={async (query) =>
@@ -1167,7 +1167,7 @@ function ImageSizeButtons() {
   const editor = useBlockNoteEditor<any, any, any>();
   const blocks = useSelectedBlocks(editor);
   const block = blocks.length === 1 ? blocks[0] : undefined;
-  if (!block || (block.type !== 'image' && block.type !== 'video')) return null;
+  if (!block || !editor.isEditable || (block.type !== 'image' && block.type !== 'video')) return null;
   const width = Number((block.props as { previewWidth?: number }).previewWidth) || 512;
   const sizes = [
     { label: 'Small', text: 'S', px: 240 },
@@ -1276,7 +1276,17 @@ export function layoutCss(doc: Y.Doc): string {
       if (/^[\w-]{1,80}$/.test(id)) rules.push(`.page .bn-editor > .bn-block-group > .bn-block-outer[data-id="${id}"]{grid-column:${i === 0 ? '1 / ' : ''}span ${row.spans[i]}}`);
     });
   }
-  return `@media (min-width: 48.01em){${rules.join('')}}`;
+  // On a phone the columns stack. While editing, a bar on the left shows which blocks belong to one row.
+  const marks: string[] = [];
+  for (const row of rows) {
+    row.members.forEach((id, i) => {
+      if (!/^[\w-]{1,80}$/.test(id)) return;
+      const sel = `.page .bn-editor[contenteditable="true"] > .bn-block-group > .bn-block-outer[data-id="${id}"]`;
+      marks.push(`${sel}{border-left:3px solid color-mix(in srgb, var(--accent) 55%, transparent);padding-left:10px;margin-left:2px}`);
+      if (i === 0) marks.push(`${sel}::before{content:'Columns \\00B7 side by side on wider screens';display:block;font:600 10.5px/1.6 var(--mantine-font-family);color:var(--muted);letter-spacing:.02em}`);
+    });
+  }
+  return `@media (min-width: 48.01em){${rules.join('')}}@media (max-width: 48em){${marks.join('')}}`;
 }
 
 /** ProseMirror draws its own drop line while a block is dragged; when we take the drop over, it has to be told to let go. */
@@ -1299,6 +1309,12 @@ function dropBeside(editor: BlockNoteEditor<any, any, any>, doc: Y.Doc, movedId:
     for (const id of row?.members ?? [targetId]) layouts.set(id, JSON.stringify({ r: rowId }));
     layouts.set(movedId, JSON.stringify({ r: rowId }));
   });
+  // the move drops the selection; keep the cursor in the block that was moved
+  try {
+    editor.setTextCursorPosition(movedId, 'end');
+  } catch {
+    /* a block without text (a picture) has no cursor */
+  }
 }
 
 function leaveRow(doc: Y.Doc, id: string): void {
@@ -1481,8 +1497,7 @@ function ColumnsButton({ doc }: { doc: Y.Doc }) {
     return () => layouts.unobserve(on);
   }, [layouts]);
   const block = blocks[0];
-  // Phones show every block at full width, so there is nothing to arrange there.
-  if (!block || phone) return null;
+  if (!block || !editor.isEditable) return null;
   const inRow = placedRows(doc).find((r) => r.members.includes(block.id));
   const above = editor.getPrevBlock(block);
   const below = editor.getNextBlock(block);
@@ -1497,7 +1512,7 @@ function ColumnsButton({ doc }: { doc: Y.Doc }) {
     </Button>
   );
   return (
-    <Popover opened={open} onChange={setOpen} position="bottom" shadow="md" withinPortal={false} floatingStrategy="absolute" trapFocus={false} closeOnClickOutside={false}>
+    <Popover opened={open} onChange={setOpen} position="bottom" shadow="md" withinPortal={false} floatingStrategy={phone ? 'fixed' : 'absolute'} trapFocus={false} closeOnClickOutside={false}>
       <Popover.Target>
         <div>
           <Components.FormattingToolbar.Button
@@ -1510,14 +1525,18 @@ function ColumnsButton({ doc }: { doc: Y.Doc }) {
           />
         </div>
       </Popover.Target>
-      <Popover.Dropdown w={260} onMouseDown={(e) => e.preventDefault()}>
+      <Popover.Dropdown w={260} onMouseDown={(e) => e.preventDefault()} style={phone ? { maxWidth: 'calc(100vw - 24px)' } : undefined}>
         <Stack gap={2}>
-          <Text size="sm" fw={600} mb={2}>Columns</Text>
+          <Text size="sm" fw={600} mb={2}>Layout</Text>
+          {item('Move up', 'Move this block above the one before it', () => editor.moveBlocksUp())}
+          {item('Move down', 'Move this block below the one after it', () => editor.moveBlocksDown())}
           {item('Beside the block above', 'Make a row of this block and the one above it', () => above && dropBeside(editor, doc, block.id, above.id, 'right'), !topLevel || !above || (!inRow?.members.includes(above.id) && (placedRows(doc).find((r) => r.members.includes(above.id))?.members.length ?? 1) >= MAX_COLUMNS))}
           {item('Beside the block below', 'Make a row of this block and the one below it', () => below && dropBeside(editor, doc, block.id, below.id, 'left'), !topLevel || !below)}
           {item('Equal widths', 'Share the row evenly', () => inRow && doc.transact(() => inRow.members.forEach((id) => layouts.set(id, JSON.stringify({ r: inRow.id })))), !inRow)}
           {item('Full width again', 'Take this block out of its row', () => leaveRow(doc, block.id), !inRow)}
-          <Text size="xs" c="dimmed" mt={4}>Tip: drag a block by its handle to the left or right edge of another block, and drag the gap between columns to resize.</Text>
+          <Text size="xs" c="dimmed" mt={4}>
+            {phone ? 'Columns sit side by side on wider screens; on a phone they stack, marked by a bar on the left.' : 'Tip: drag a block by its handle to the left or right edge of another block, and drag the gap between columns to resize.'}
+          </Text>
         </Stack>
       </Popover.Dropdown>
     </Popover>
