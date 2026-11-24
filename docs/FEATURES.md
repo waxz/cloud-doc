@@ -109,3 +109,8 @@ Fields are 16px on touch screens so Safari doesn't zoom in when they get focus, 
 - Each project folds shut from its header (remembered per browser, with a count of its pages).
 - Search has two modes: **Text** (words inside pages, on the server) and **Titles** (an instant filter of page titles, which asks the server for nothing).
 - The light/dark switch is in the page header; the account menu is just Settings (with the Storage tab), Admin and Sign out.
+
+## Forgotten passwords
+
+- **Admin contact email** (*Admin → Settings*): shown on the sign-in page under "Forgot your password?" as a mail link, so people can email the admin to have their password reset.
+- **Recovery mode** for a forgotten admin password: with a `RECOVERY_SECRET` set on the Worker in the Cloudflare dashboard, the sign-in page offers *I am the admin: use recovery mode*. The secret, plus a new password, resets that admin account and signs in. The secret can be changed in the dashboard any time; wrong tries are limited and uses are logged. See [Deploying](DEPLOY.md#recovery-mode-a-forgotten-admin-password).

@@ -340,7 +340,10 @@ const afterWrite = <T>(prefix: string, promise: Promise<T>) =>
 
 export const api = {
   me: () => call<Me>('GET', '/api/me'),
-  authStatus: () => call<{ setup: boolean }>('GET', '/api/auth/status'),
+  authStatus: () => call<{ setup: boolean; adminEmail: string; recovery: boolean }>('GET', '/api/auth/status'),
+  recover: (secret: string, email: string, newPassword: string) => afterWrite('', call<Me>('POST', '/api/auth/recover', { secret, email, newPassword })),
+  adminSettings: () => call<{ adminEmail: string; recoveryEnabled: boolean }>('GET', '/api/admin/settings'),
+  setAdminSettings: (patch: { adminEmail?: string }) => call<{ adminEmail: string; recoveryEnabled: boolean }>('PUT', '/api/admin/settings', patch),
   registration: (token: string) => call<{ email: string | null; workspace: string | null; storage: string | null }>('GET', `/api/register/${enc(token)}`),
   signup: (email: string, name: string, password: string, token?: string) =>
     afterWrite('', call<Me>('POST', '/api/auth/signup', { email, name, password, token })),

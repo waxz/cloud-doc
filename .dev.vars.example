@@ -1,3 +1,5 @@
 # Secrets for local development. `npm run dev` creates .dev.vars with a random STORAGE_KEY when it is missing.
 # STORAGE_KEY encrypts the WebDAV passwords users save: any long random string works. Keep it once users have saved storages.
 STORAGE_KEY=
+# Optional: 16+ characters switch on admin recovery mode (reset the admin password from the sign-in page). Leave empty to keep it off.
+RECOVERY_SECRET=

@@ -1,5 +1,5 @@
 import { sealPassword } from './secret.js';
-import { hashPassword, requireAdmin, requireUser, type User, verifyPassword } from './auth.js';
+import { getAppSetting, hashPassword, recoveryEnabled, requireAdmin, requireUser, type User, verifyPassword } from './auth.js';
 import type { Env } from './env.js';
 import { HttpError, json, newId, noContent, randomToken, readJson, str } from './http.js';
 import { cleanPath, joinUrl, probeStorage, sharedUsage, splitUrl, storageById, usage, WebDav } from './storage.js';
@@ -555,4 +555,25 @@ export async function adminRemoveGrant(env: Env, user: User | null, sid: string,
   if (inUse && inUse.n > 0) throw new HttpError(409, `${inUse.n} workspace(s) of this user are built on this storage; remove or move them first`);
   await env.DB.prepare('DELETE FROM storage_grants WHERE storage_id = ? AND user_id = ?').bind(sid, uid).run();
   return noContent();
+}
+
+
+// ---------- admin: instance settings ----------
+
+/** The contact email shown on the sign-in page, and whether recovery mode is switched on. */
+export async function adminGetSettings(env: Env, user: User | null): Promise<Response> {
+  requireAdmin(user);
+  return json({ adminEmail: await getAppSetting(env, 'admin_email'), recoveryEnabled: recoveryEnabled(env) });
+}
+
+export async function adminSetSettings(req: Request, env: Env, user: User | null): Promise<Response> {
+  requireAdmin(user);
+  const b = await readJson<{ adminEmail?: string }>(req);
+  if (b.adminEmail !== undefined) {
+    const email = typeof b.adminEmail === 'string' ? b.adminEmail.trim() : '';
+    if (email && (email.length > 200 || !/^[^\s@,;<>]+@[^\s@,;<>]+\.[^\s@,;<>]+$/.test(email))) throw new HttpError(400, 'that is not a valid email address');
+    if (email) await env.DB.prepare('INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value').bind('admin_email', email).run();
+    else await env.DB.prepare("DELETE FROM app_settings WHERE key = 'admin_email'").run();
+  }
+  return json({ adminEmail: await getAppSetting(env, 'admin_email'), recoveryEnabled: recoveryEnabled(env) });
 }

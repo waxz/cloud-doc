@@ -116,8 +116,25 @@ const opened = []; // pages, for a screenshot of each when something fails
   await alice.getByRole('tab', { name: 'Users' }).click();
   await alice.locator('.user-card').filter({ hasText: 'Alice' }).waitFor();
   await shot(alice, 'ui-admin-users');
+  // the contact email people see on the sign-in page
+  await alice.getByRole('tab', { name: 'Settings' }).click();
+  await alice.getByLabel('Admin contact email').fill('help@example.org');
+  await btn(alice, 'Save').click();
+  await alice.getByText('It now shows on the sign-in page').waitFor();
+  await alice.getByText(process.env.RECOVERY_SECRET ? 'On' : 'Off', { exact: true }).waitFor();
   await alice.keyboard.press('Escape');
-  console.log('✓ admin: registration link, users list');
+  console.log('✓ admin: registration link, users list, contact email');
+
+  // --- the sign-in page: the admin's email for forgotten passwords, and recovery mode when it is switched on ---
+  const stranger = await ctx('stranger');
+  await stranger.goto(B);
+  const mail = stranger.getByRole('link', { name: 'help@example.org' });
+  await mail.waitFor();
+  assert.match(await mail.getAttribute('href'), /^mailto:help@example\.org\?subject=/);
+  if (!process.env.RECOVERY_SECRET) {
+    assert.equal(await stranger.getByRole('button', { name: /use recovery mode/ }).count(), 0, 'no recovery link without a secret');
+    console.log('✓ sign-in page: admin email link; no recovery link while the secret is not set');
+  }
 
   // --- Bob registers through the link ---
   const bob = await ctx('bob');
@@ -426,6 +443,17 @@ const opened = []; // pages, for a screenshot of each when something fails
   await phone.getByRole('button', { name: 'Full width again' }).click();
   await phone.waitForFunction(() => ![...document.querySelectorAll('.page .bn-editor > .bn-block-group > .bn-block-outer')].some((o) => getComputedStyle(o).borderLeftWidth === '3px'));
   console.log('✓ phone: drawer navigation, page with media, panels as bottom sheets, fields 16px, toolbar fits, columns editable');
+
+  // recovery mode last: it ends the admin's other sessions
+  if (process.env.RECOVERY_SECRET) {
+    await stranger.getByRole('button', { name: /use recovery mode/ }).click();
+    await stranger.getByLabel('Recovery secret').fill(process.env.RECOVERY_SECRET);
+    await stranger.getByLabel(/Admin email/).fill(aliceEmail);
+    await stranger.getByLabel('New password').fill('recovered password 1');
+    await btn(stranger, 'Reset password and sign in').click();
+    await stranger.locator('.ws-switch').waitFor();
+    console.log('✓ sign-in page: recovery mode resets the admin password and signs in');
+  }
 
   console.log('errors:', errors);
   assert.equal(errors.length, 0);
