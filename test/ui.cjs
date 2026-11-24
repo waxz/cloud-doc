@@ -370,6 +370,20 @@ const opened = []; // pages, for a screenshot of each when something fails
   assert.ok(back.second.y > back.first.y + 10 && back.first.x === back.second.x, 'taking one block out leaves both stacked again');
   console.log('✓ columns: drag a block beside another, resize, stack again, shared live');
 
+  // --- the outline floats over the page: opening it never changes the width of the text, in edit or guest mode ---
+  for (const [who, page] of [['editor', alice], ['guest', visitor]]) {
+    const width = () => page.evaluate(() => { const r = document.querySelector('.page').getBoundingClientRect(); return `${Math.round(r.left)}:${Math.round(r.width)}`; });
+    const before = await width();
+    await page.getByRole('button', { name: 'Outline', exact: true }).click();
+    await page.locator('.outline-float').waitFor();
+    assert.equal(await page.locator('.side-panel').count(), 0, `${who}: the outline is not a column`);
+    await page.waitForTimeout(300);
+    assert.equal(await width(), before, `${who}: opening the outline leaves the page exactly where it was`);
+    await page.getByRole('button', { name: 'Close outline' }).click();
+    assert.equal(await width(), before, `${who}: and closing it does too`);
+  }
+  console.log('✓ outline: a floating card; the page width never changes');
+
   // --- phone ---
   const phone = await ctx('phone', { ...devices['iPhone 13'] });
   await phone.goto(B);
