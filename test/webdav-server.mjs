@@ -72,7 +72,7 @@ export function startWebDav({ port = 0, user = 'dav', pass = 'davpass' } = {}) {
   });
   return new Promise((resolve) =>
     server.listen(port, '127.0.0.1', () =>
-      resolve({ url: `http://127.0.0.1:${server.address().port}`, user, pass, files, close: () => server.close() })
+      resolve({ url: `http://127.0.0.1:${server.address().port}`, user, pass, files, dirs, close: () => server.close() })
     )
   );
 }

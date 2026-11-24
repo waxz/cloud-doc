@@ -56,6 +56,9 @@ export interface Storage {
   id: string;
   name: string;
   url: string;
+  /** The server address and the folder under it (the folder is made if it doesn't exist). */
+  baseUrl?: string;
+  path?: string;
   username: string;
   hasPassword: boolean;
 }
@@ -91,6 +94,10 @@ export interface DeletePreview {
 export interface StorageInput {
   name?: string;
   url?: string;
+  baseUrl?: string;
+  path?: string;
+  /** With a test: create the folder if it's missing. */
+  create?: boolean;
   username?: string;
   password?: string;
 }
@@ -433,7 +440,7 @@ export const api = {
   updateStorage: (sid: string, s: StorageInput) => call<Storage>('PATCH', `/api/storages/${sid}`, s),
   deleteStorage: (sid: string) => call<void>('DELETE', `/api/storages/${sid}`),
   testStorage: (sid: string | null, s: StorageInput) =>
-    call<{ ok: boolean; message: string }>('POST', sid ? `/api/storages/${sid}/test` : '/api/storages/test', s),
+    call<{ ok: boolean; message: string; missing?: boolean; created?: boolean }>('POST', sid ? `/api/storages/${sid}/test` : '/api/storages/test', s),
   setDefaultStorage: (uid: string, storageId: string | null) => call<void>('PUT', `/api/users/${uid}/default-storage`, { storageId }),
   setWorkspaceStorage: (uid: string, wid: string, storageId: string | null) =>
     call<void>('PUT', `/api/users/${uid}/workspaces/${wid}/storage`, { storageId }),
@@ -456,7 +463,7 @@ export const api = {
   adminUpdateSharedStorage: (sid: string, s: StorageInput) => call<Storage>('PATCH', `/api/admin/shared-storages/${sid}`, s),
   adminDeleteSharedStorage: (sid: string) => call<void>('DELETE', `/api/admin/shared-storages/${sid}`),
   adminTestSharedStorage: (sid: string | null, s: StorageInput) =>
-    call<{ ok: boolean; message: string }>('POST', sid ? `/api/admin/shared-storages/${sid}/test` : '/api/admin/shared-storages/test', s),
+    call<{ ok: boolean; message: string; missing?: boolean; created?: boolean }>('POST', sid ? `/api/admin/shared-storages/${sid}/test` : '/api/admin/shared-storages/test', s),
   adminSetGrant: (sid: string, uid: string, limitBytes: number | null) => call<void>('PUT', `/api/admin/shared-storages/${sid}/grants/${uid}`, { limitBytes }),
   adminRemoveGrant: (sid: string, uid: string) => call<void>('DELETE', `/api/admin/shared-storages/${sid}/grants/${uid}`),
   adminLinks: () => call<RegistrationLink[]>('GET', '/api/admin/links'),

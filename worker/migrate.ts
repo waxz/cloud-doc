@@ -14,6 +14,7 @@ import indexes from '../migrations/0013_indexes.sql';
 import workspaceFiles from '../migrations/0014_workspace_files_shared_storage.sql';
 import linkWorkspaceStorage from '../migrations/0015_link_workspace_storage.sql';
 import commentParent from '../migrations/0016_comment_parent.sql';
+import storageRootPath from '../migrations/0017_storage_root_path.sql';
 
 /**
  * Migrations bundled into the Worker, applied on first use so a plain
@@ -38,6 +39,7 @@ const MIGRATIONS: [name: string, sql: string][] = [
   ['0014_workspace_files_shared_storage.sql', workspaceFiles],
   ['0015_link_workspace_storage.sql', linkWorkspaceStorage],
   ['0016_comment_parent.sql', commentParent],
+  ['0017_storage_root_path.sql', storageRootPath],
 ];
 
 /** Splits a migration into statements (no semicolons inside strings in these files). */

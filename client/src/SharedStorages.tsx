@@ -57,7 +57,7 @@ export function SharedStorages({ onError }: { onError: (message: string) => void
                   <Text fw={500}>{s.name}</Text>
                   <Badge size="xs" variant="light">{s.grants.length} user{s.grants.length === 1 ? '' : 's'}</Badge>
                 </Group>
-                <Text size="xs" c="dimmed" truncate="end">{s.url}</Text>
+                <Text size="xs" c="dimmed" truncate="end">{s.baseUrl ?? s.url}{s.path ? ` · ${s.path}` : ''}</Text>
               </div>
               <Group gap={2} wrap="nowrap">
                 <Tooltip label="Edit"><ActionIcon variant="subtle" color="gray" aria-label={`Edit ${s.name}`} onClick={() => setEditing(s)}><IconPencil size={16} /></ActionIcon></Tooltip>

@@ -47,7 +47,8 @@ export function StorageManager({ uid, storages, defaultId, onChanged, onError }:
                   )}
                 </Group>
                 <Text size="xs" c="dimmed" truncate="end">
-                  {s.url}
+                  {s.baseUrl ?? s.url}
+                  {s.path ? ` · ${s.path}` : ''}
                 </Text>
                 {s.username && (
                   <Text size="xs" c="dimmed">
@@ -126,12 +127,21 @@ export function StorageForm({
 }) {
   const [form, setForm] = useState<StorageInput>({
     name: storage?.name ?? '',
-    url: storage?.url ?? '',
+    baseUrl: storage?.baseUrl ?? storage?.url ?? '',
+    path: storage?.path ?? '',
     username: storage?.username ?? '',
     password: '',
   });
-  const [test, setTest] = useState<{ ok: boolean; message: string } | null>(null);
+  const [test, setTest] = useState<{ ok: boolean; message: string; missing?: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
+  const runTest = async (create: boolean) => {
+    try {
+      const input = { ...form, create };
+      setTest(await (shared ? api.adminTestSharedStorage(storage?.id ?? null, input) : api.testStorage(storage?.id ?? null, input)));
+    } catch (err) {
+      setTest({ ok: false, message: errorText(err) });
+    }
+  };
   const set = (k: keyof StorageInput) => (e: React.ChangeEvent<HTMLInputElement>) => {
     setForm({ ...form, [k]: e.currentTarget.value });
     setTest(null);
@@ -157,12 +167,22 @@ export function StorageForm({
         <Stack gap="xs">
           <TextInput label="Name" placeholder="My drive" value={form.name} onChange={set('name')} required />
           <TextInput
-            label="WebDAV folder URL"
-            placeholder="https://drive.example.com/dav/home"
-            description="Files go into a cloud-doc folder inside it"
-            value={form.url}
-            onChange={set('url')}
+            label="Server URL"
+            placeholder="https://drive.example.com/remote.php/dav/files/me"
+            description="The WebDAV address of your account on the server"
+            value={form.baseUrl}
+            onChange={set('baseUrl')}
+            inputMode="url"
+            autoCapitalize="off"
             required
+          />
+          <TextInput
+            label="Folder"
+            placeholder="Apps/cloud-doc"
+            description="Where Cloud Doc keeps its data. Created for you if it doesn't exist; leave empty to use the server URL itself."
+            value={form.path}
+            onChange={set('path')}
+            autoCapitalize="off"
           />
           <Group grow>
             <TextInput label="Username" value={form.username} onChange={set('username')} autoComplete="off" />
@@ -175,23 +195,24 @@ export function StorageForm({
             />
           </Group>
           {test && (
-            <Text size="sm" c={test.ok ? 'teal' : 'red'}>
-              {test.ok ? <IconCheck size={14} /> : <IconX size={14} />} {test.message}
-            </Text>
+            <Group gap="xs" align="center">
+              <Text size="sm" c={test.ok ? 'teal' : test.missing ? 'orange' : 'red'}>
+                {test.ok ? <IconCheck size={14} /> : <IconX size={14} />} {test.message}
+              </Text>
+              {test.missing && (
+                <Button size="compact-xs" variant="light" onClick={() => runTest(true)}>
+                  Create folder
+                </Button>
+              )}
+            </Group>
           )}
           <Group justify="flex-end" gap="xs">
             <Button
               variant="default"
               size="xs"
               leftSection={<IconPlugConnected size={15} />}
-              onClick={async () => {
-                try {
-                  setTest(await (shared ? api.adminTestSharedStorage(storage?.id ?? null, form) : api.testStorage(storage?.id ?? null, form)));
-                } catch (err) {
-                  setTest({ ok: false, message: errorText(err) });
-                }
-              }}
-              disabled={!form.url}
+              onClick={() => runTest(false)}
+              disabled={!form.baseUrl}
             >
               Test
             </Button>
