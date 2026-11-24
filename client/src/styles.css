@@ -523,3 +523,22 @@ button.page-icon:hover { background: var(--hover); }
 
 /* The toolbar and its menus keep the interface font even on an article page. */
 .page .bn-formatting-toolbar, .page .bn-formatting-toolbar * { font-family: var(--mantine-font-family); }
+
+/* ---- columns (drag a block to another block's edge; drag the gap to resize) ---- */
+.column-drop-hint { position: fixed; z-index: 60; width: 4px; border-radius: 4px; background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); pointer-events: none; }
+.column-handle { position: fixed; z-index: 40; width: 14px; display: flex; justify-content: center; cursor: col-resize; touch-action: none; opacity: 0; transition: opacity .12s; }
+.column-handle span { width: 3px; height: 100%; border-radius: 3px; background: var(--accent); opacity: .85; }
+.page-layout:hover .column-handle { opacity: .28; }
+.column-handle:hover, .column-handle:active { opacity: 1 !important; }
+@media (max-width: 48em) { .column-handle, .column-drop-hint { display: none; } }
+
+/* ---- a calmer editor, in the spirit of Anytype: soft surfaces, quiet chrome, clear drop targets ---- */
+.bn-formatting-toolbar { border-radius: 12px !important; border: 1px solid var(--line) !important; box-shadow: 0 8px 28px rgb(0 0 0 / 14%) !important; padding: 3px !important; gap: 2px; }
+.bn-formatting-toolbar .bn-button { border-radius: 8px; }
+.bn-suggestion-menu { border-radius: 14px !important; box-shadow: 0 12px 36px rgb(0 0 0 / 16%) !important; border: 1px solid var(--line) !important; }
+.bn-side-menu .bn-button { border-radius: 8px; }
+.bn-side-menu .bn-button:hover { background: var(--hover); }
+.page .bn-block-outer { border-radius: 8px; }
+.page .bn-editor .bn-block-group > .bn-block-outer:hover > .bn-block > .bn-block-content { background: color-mix(in srgb, var(--accent) 3.5%, transparent); border-radius: 8px; transition: background .12s; }
+.page .bn-visual-media { box-shadow: 0 1px 3px rgb(0 0 0 / 12%); }
+.page-bar .mantine-SegmentedControl-root { border-radius: 10px; }

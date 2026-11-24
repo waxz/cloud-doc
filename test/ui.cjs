@@ -304,25 +304,53 @@ const opened = []; // pages, for a screenshot of each when something fails
   await alice.getByRole('button', { name: 'Exit search' }).click();
   console.log('✓ explorer: projects fold, title search is local, workspace buttons on top, theme switch in the header');
 
-  // --- block layout: any block can be floated and sized; everyone sees it ---
-  await alice.locator('.bn-editor').getByText('Two engineers in Q2.').first().click({ clickCount: 3 });
-  await alice.locator('[data-test^="blocklayout"]').click();
-  await alice.getByText('Float left', { exact: true }).click();
-  await alice.getByText('50%', { exact: true }).click();
-  const placed = (page) => page.evaluate(() => {
-    const outer = [...document.querySelectorAll('.bn-block-outer')].find((o) => o.textContent.includes('Two engineers in Q2.'));
-    const column = outer.parentElement.getBoundingClientRect().width;
-    return { float: getComputedStyle(outer).float, share: Math.round((outer.getBoundingClientRect().width / column) * 100) };
-  });
-  const mine = await placed(alice);
-  assert.equal(mine.float, 'left', 'the block floats left');
-  assert.ok(mine.share >= 45 && mine.share <= 52, `and takes about half the column (got ${mine.share}%)`);
-  await visitor.waitForFunction(() => [...document.querySelectorAll('.bn-block-outer')].some((o) => o.textContent.includes('Two engineers in Q2.') && getComputedStyle(o).float === 'left'), null, { timeout: 10000 });
-  assert.equal((await placed(visitor)).float, 'left', "a reader sees the arrangement live, from the shared document");
-  await alice.locator('[data-test^="blocklayout"]').click().catch(() => {}); // reopen if the menu closed
-  await alice.getByRole('button', { name: 'Reset' }).click();
-  await alice.waitForFunction(() => ![...document.querySelectorAll('.bn-block-outer')].some((o) => o.textContent.includes('Two engineers in Q2.') && getComputedStyle(o).float !== 'none'));
-  console.log('✓ block layout: float and width for a text block, shared live, reset');
+  // --- columns: drag a block beside another, resize them, stack them again; a reader sees it live ---
+  await alice.locator('.bn-editor').getByText('Two engineers in Q2.').first().click();
+  await alice.keyboard.press('End');
+  await alice.keyboard.press('Enter');
+  await alice.keyboard.type('Interview in May.');
+  const rows = (page) => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.page .bn-editor > .bn-block-group > .bn-block-outer')]
+    .filter((o) => /Two engineers|Interview/.test(o.textContent)).map((o) => [o.textContent.includes('Interview') ? 'second' : 'first', { x: Math.round(o.getBoundingClientRect().left), y: Math.round(o.getBoundingClientRect().top), w: Math.round(o.getBoundingClientRect().width) }])));
+  const stacked = await rows(alice);
+  assert.ok(stacked.second.y > stacked.first.y + 10 && stacked.first.x === stacked.second.x, 'two blocks start out stacked');
+  const outers = alice.locator('.page .bn-editor > .bn-block-group > .bn-block-outer');
+  const firstBlock = outers.filter({ hasText: 'Two engineers in Q2.' });
+  await outers.filter({ hasText: 'Interview in May.' }).hover();
+  const grip = alice.locator('.bn-side-menu [draggable="true"]').first();
+  const gb = await grip.boundingBox();
+  const fb = await firstBlock.boundingBox();
+  await alice.mouse.move(gb.x + gb.width / 2, gb.y + gb.height / 2);
+  await alice.mouse.down();
+  await alice.mouse.move(gb.x + 40, gb.y - 20, { steps: 5 });
+  await alice.mouse.move(fb.x + fb.width - 20, fb.y + fb.height / 2, { steps: 12 });
+  await alice.locator('.column-drop-hint').waitFor({ timeout: 5000 });
+  await alice.mouse.up();
+  await alice.waitForFunction(() => document.querySelector('style[data-block-layouts]')?.textContent.includes('span 6'));
+  const side = await rows(alice);
+  assert.ok(Math.abs(side.first.y - side.second.y) < 4 && side.second.x > side.first.x + 100, 'dropping on the right edge puts the blocks side by side');
+  assert.ok(Math.abs(side.first.w - side.second.w) < 4, 'in equal columns');
+  await visitor.waitForFunction(() => document.querySelector('style[data-block-layouts]')?.textContent.includes('span 6'), null, { timeout: 10000 });
+  const theirs = await rows(visitor);
+  assert.ok(Math.abs(theirs.first.y - theirs.second.y) < 4 && theirs.second.x > theirs.first.x + 100, 'a reader sees the columns live');
+  // drag the gap to make the first column wider
+  await alice.locator('.page-layout').hover();
+  const gap = alice.locator('.column-handle').first();
+  const gapBox = await gap.boundingBox();
+  await alice.mouse.move(gapBox.x + gapBox.width / 2, gapBox.y + gapBox.height / 2);
+  await alice.mouse.down();
+  await alice.mouse.move(gapBox.x + gapBox.width / 2 + 70, gapBox.y + gapBox.height / 2, { steps: 8 });
+  await alice.mouse.up();
+  await alice.waitForTimeout(500);
+  const resized = await rows(alice);
+  assert.ok(resized.first.w > side.first.w + 30 && resized.second.w < side.second.w - 30, 'dragging the gap resizes the columns');
+  // the toolbar does the same without dragging: back to full width
+  await alice.locator('.bn-editor').getByText('Interview in May.').first().click({ clickCount: 3 });
+  await alice.locator('[data-test^="columns"]').click();
+  await alice.getByRole('button', { name: 'Full width again' }).click();
+  await alice.waitForFunction(() => !document.querySelector('style[data-block-layouts]')?.textContent.includes('span'));
+  const back = await rows(alice);
+  assert.ok(back.second.y > back.first.y + 10 && back.first.x === back.second.x, 'taking one block out leaves both stacked again');
+  console.log('✓ columns: drag a block beside another, resize, stack again, shared live');
 
   // --- phone ---
   const phone = await ctx('phone', { ...devices['iPhone 13'] });

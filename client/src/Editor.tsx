@@ -21,7 +21,7 @@ import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
 import { api, TAB_ID, type Comment } from './api';
 import { attachLiveMode } from './liveMode';
-import { IconArticle, IconLayout2 } from '@tabler/icons-react';
+import { IconArticle, IconLayoutColumns } from '@tabler/icons-react';
 import { COMMENT_COLORS, HIGHLIGHT_SHAPES, PageContext, type HighlightShape, schema, type Schema } from './blocks';
 import { errorText, highlightPositions, takeFind } from './util';
 
@@ -400,11 +400,14 @@ export function PageEditor({ pageId, me, canEdit, canComment, dark, onTitle, onI
     const style = document.createElement('style');
     style.setAttribute('data-block-layouts', pageId);
     document.head.appendChild(style);
-    const apply = () => { style.textContent = layoutCss(layouts); };
+    const frag = doc.getXmlFragment('document-store');
+    const apply = () => { style.textContent = layoutCss(doc); };
     layouts.observe(apply);
+    frag.observeDeep(apply); // moving a block changes which blocks are neighbours
     apply();
     return () => {
       layouts.unobserve(apply);
+      frag.unobserveDeep(apply);
       style.remove();
     };
   }, [doc, pageId]);
@@ -519,7 +522,7 @@ export function PageEditor({ pageId, me, canEdit, canComment, dark, onTitle, onI
       <FormattingToolbar>
         {...getFormattingToolbarItems()}
         <ImageSizeButtons key="size" />
-        <BlockLayoutButton key="layout" doc={doc} />
+        <ColumnsButton key="columns" doc={doc} />
         {hasComment && <CommentButton key="comment" onClick={() => {
           const text = editor.getSelectedText();
           if (text) commentRef.current?.(text, undefined, 'yellow', 'highlight');
@@ -1150,6 +1153,7 @@ export function PageEditor({ pageId, me, canEdit, canComment, dark, onTitle, onI
         />
       </BlockNoteView>
       </PageContext.Provider>
+      {synced && <ColumnsLayer editor={editor} doc={doc} canEdit={editable} />}
       {canComment && onComment && (!canEdit || viewMode === 'read') && (
         <SelectionComment editor={editor} onComment={onComment} pageId={pageId} onError={onError} />
       )}
@@ -1191,114 +1195,329 @@ function ImageSizeButtons() {
 }
 
 /**
- * Where a block sits, for any kind of block: in the flow, floated left or right with the text wrapping round it, or
- * centred; how wide it is; and whether it starts on a new line. Kept in the document next to the text, by block id
- * (not inside the blocks), so it works for text, pictures, tables, PDFs and the rest and never changes pages that
- * don't use it. Two neighbouring blocks floated left at 48% make two columns.
+ * Columns, the way Anytype does it: drag a block to the left or right edge of another block and the two sit side by
+ * side in a row; drag the gap between columns to resize them; drag a block back between rows to stack it again.
+ * (There is no text wrapping, so nothing flows around anything and layouts can't fight each other.)
+ *
+ * A row is a run of neighbouring top-level blocks that share a row id. That, and each column's width in twelfths of
+ * the page column, is kept in the document next to the text by block id (not inside the blocks), so it works for
+ * every kind of block, everyone sees it live, and pages that never use columns are untouched. Phones show every
+ * block full width.
  */
-interface BlockLayout {
-  /** position */
-  p?: 'left' | 'right' | 'center';
-  /** width, percent of the page column */
-  w?: number;
-  /** start below anything floated before it */
-  c?: boolean;
+interface Slot {
+  /** row id */
+  r: string;
+  /** width in twelfths; all columns of a row have one and they add up to 12, or none (equal widths) */
+  s?: number;
 }
 
-const parseLayout = (raw: string | undefined): BlockLayout => {
+const MAX_COLUMNS = 4;
+const MIN_SPAN = 2;
+
+const parseSlot = (raw: string | undefined): Slot | null => {
   try {
-    const v = JSON.parse(raw ?? '{}') as BlockLayout;
-    return { p: v.p === 'left' || v.p === 'right' || v.p === 'center' ? v.p : undefined, w: typeof v.w === 'number' && v.w >= 10 && v.w <= 100 ? Math.round(v.w) : undefined, c: v.c === true };
+    const v = JSON.parse(raw ?? 'null') as Slot | null;
+    return v && typeof v.r === 'string' && v.r ? { r: v.r.slice(0, 40), s: typeof v.s === 'number' ? Math.round(v.s) : undefined } : null;
   } catch {
-    return {};
+    return null;
   }
 };
 
-/** The stylesheet for a page's block layouts. Wide screens only: on a phone every block takes the full width. */
-export function layoutCss(layouts: Y.Map<string>): string {
-  const rules: string[] = [];
-  layouts.forEach((raw, id) => {
-    if (!/^[\w-]{1,80}$/.test(id)) return;
-    const l = parseLayout(raw);
-    const width = l.w ?? (l.p === 'left' || l.p === 'right' ? 42 : l.p === 'center' ? 60 : undefined);
-    const d: string[] = [];
-    if (l.p === 'left') d.push('float:left', 'margin:4px 24px 12px 0');
-    else if (l.p === 'right') d.push('float:right', 'margin:4px 0 12px 24px');
-    else if (l.p === 'center') d.push('margin-left:auto', 'margin-right:auto');
-    if (width && width < 100) d.push(`width:${width}%`);
-    if (l.c) d.push('clear:both');
-    if (d.length) rules.push(`.page .bn-block-outer[data-id="${id}"]{${d.join(';')}}`);
-  });
-  return rules.length ? `@media (min-width: 48.01em){${rules.join('')}}` : '';
+interface PlacedRow {
+  id: string;
+  /** block ids, left to right */
+  members: string[];
+  /** twelfths per member */
+  spans: number[];
 }
 
-function BlockLayoutButton({ doc }: { doc: Y.Doc }) {
+/** The rows of a page, from the document's block order and its slots. Runs of one block are not rows. */
+export function placedRows(doc: Y.Doc): PlacedRow[] {
+  const layouts = doc.getMap<string>('layouts');
+  if (layouts.size === 0) return [];
+  const group = doc.getXmlFragment('document-store').get(0);
+  if (!(group instanceof Y.XmlElement)) return [];
+  const rows: PlacedRow[] = [];
+  let run: { id: string; ids: string[]; slots: Slot[] } | null = null;
+  const close = () => {
+    if (run && run.ids.length >= 2 && run.ids.length <= MAX_COLUMNS) {
+      const given = run.slots.map((x) => x.s);
+      const ok = given.every((v) => typeof v === 'number' && v >= MIN_SPAN) && given.reduce<number>((a, b) => a + (b ?? 0), 0) === 12;
+      rows.push({ id: run.id, members: run.ids, spans: ok ? (given as number[]) : run.ids.map(() => 12 / run!.ids.length) });
+    }
+    run = null;
+  };
+  for (const child of group.toArray()) {
+    const id = child instanceof Y.XmlElement ? String(child.getAttribute('id') ?? '') : '';
+    const slot = id ? parseSlot(layouts.get(id)) : null;
+    if (!slot) {
+      close();
+      continue;
+    }
+    if (run && run.id === slot.r) {
+      run.ids.push(id);
+      run.slots.push(slot);
+    } else {
+      close();
+      run = { id: slot.r, ids: [id], slots: [slot] };
+    }
+  }
+  close();
+  return rows;
+}
+
+/** The stylesheet that lays the rows out: the page's top-level blocks become a 12-column grid, and each column spans its share. */
+export function layoutCss(doc: Y.Doc): string {
+  const rows = placedRows(doc);
+  if (!rows.length) return '';
+  const rules = ['.page .bn-editor > .bn-block-group{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));column-gap:28px;align-items:start}', '.page .bn-editor > .bn-block-group > .bn-block-outer{grid-column:1/-1;min-width:0}'];
+  for (const row of rows) {
+    row.members.forEach((id, i) => {
+      if (/^[\w-]{1,80}$/.test(id)) rules.push(`.page .bn-editor > .bn-block-group > .bn-block-outer[data-id="${id}"]{grid-column:${i === 0 ? '1 / ' : ''}span ${row.spans[i]}}`);
+    });
+  }
+  return `@media (min-width: 48.01em){${rules.join('')}}`;
+}
+
+/** ProseMirror draws its own drop line while a block is dragged; when we take the drop over, it has to be told to let go. */
+const clearDropCursor = () => document.querySelector('.page .bn-editor')?.dispatchEvent(new DragEvent('dragleave', { bubbles: true }));
+
+const topBlocks = () => [...document.querySelectorAll<HTMLElement>('.page .bn-editor > .bn-block-group > .bn-block-outer')];
+
+/** Puts `moved` beside `target` (left or right), in the target's row if it has one, with equal widths. */
+function dropBeside(editor: BlockNoteEditor<any, any, any>, doc: Y.Doc, movedId: string, targetId: string, side: 'left' | 'right'): void {
+  const layouts = doc.getMap<string>('layouts');
+  const row = placedRows(doc).find((r) => r.members.includes(targetId));
+  const rowId = row?.id ?? crypto.randomUUID().slice(0, 8);
+  const moved = editor.getBlock(movedId);
+  const target = editor.getBlock(targetId);
+  if (!moved || !target) return;
+  doc.transact(() => {
+    editor.removeBlocks([moved]);
+    editor.insertBlocks([moved as any], target, side === 'left' ? 'before' : 'after');
+    // everyone in the row goes back to equal widths
+    for (const id of row?.members ?? [targetId]) layouts.set(id, JSON.stringify({ r: rowId }));
+    layouts.set(movedId, JSON.stringify({ r: rowId }));
+  });
+}
+
+function leaveRow(doc: Y.Doc, id: string): void {
+  const layouts = doc.getMap<string>('layouts');
+  const row = placedRows(doc).find((r) => r.members.includes(id));
+  doc.transact(() => {
+    layouts.delete(id);
+    if (row && row.members.length === 2) for (const other of row.members) layouts.delete(other); // a lone column is just a block
+    else if (row) for (const other of row.members.filter((m) => m !== id)) layouts.set(other, JSON.stringify({ r: row.id }));
+  });
+}
+
+/** The drag-and-drop part: a drop line on the edge being aimed at, the drop itself, and handles to resize columns. */
+function ColumnsLayer({ editor, doc, canEdit }: { editor: BlockNoteEditor<any, any, any>; doc: Y.Doc; canEdit: boolean }) {
+  const phone = useMediaQuery('(max-width: 48em)');
+  const [hint, setHint] = useState<{ top: number; left: number; height: number } | null>(null);
+  const [handles, setHandles] = useState<{ row: PlacedRow; index: number; x: number; top: number; height: number }[]>([]);
+  const dragged = useRef<string | null>(null);
+
+  // Handles sit in the gaps between the columns of each row.
+  const measure = useCallback(() => {
+    const rows = placedRows(doc);
+    const out: typeof handles = [];
+    for (const row of rows) {
+      const boxes = row.members.map((id) => document.querySelector<HTMLElement>(`.page .bn-block-outer[data-id="${id}"]`)?.getBoundingClientRect());
+      for (let i = 0; i < boxes.length - 1; i++) {
+        const a = boxes[i];
+        const b = boxes[i + 1];
+        if (!a || !b) continue;
+        out.push({ row, index: i, x: (a.right + b.left) / 2, top: Math.min(a.top, b.top), height: Math.max(a.bottom, b.bottom) - Math.min(a.top, b.top) });
+      }
+    }
+    setHandles(out);
+  }, [doc]);
+  useEffect(() => {
+    const layouts = doc.getMap<string>('layouts');
+    const frag = doc.getXmlFragment('document-store');
+    let frame = 0;
+    const later = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(measure);
+    };
+    layouts.observe(later);
+    if (layouts.size) frag.observeDeep(later);
+    const unsub = editor.onChange(later);
+    window.addEventListener('resize', later);
+    window.addEventListener('scroll', later, true);
+    later();
+    return () => {
+      layouts.unobserve(later);
+      frag.unobserveDeep(later);
+      unsub();
+      window.removeEventListener('resize', later);
+      window.removeEventListener('scroll', later, true);
+      cancelAnimationFrame(frame);
+    };
+  }, [doc, editor, measure]);
+
+  // Drag a block (by BlockNote's own handle) to a block's left or right edge.
+  useEffect(() => {
+    if (!canEdit || phone) return;
+    const rowSizeOf = (id: string) => placedRows(doc).find((r) => r.members.includes(id))?.members.length ?? 1;
+    const aim = (e: DragEvent): { id: string; side: 'left' | 'right'; rect: DOMRect } | null => {
+      const moved = dragged.current;
+      if (!moved) return null;
+      for (const el of topBlocks()) {
+        const r = el.getBoundingClientRect();
+        if (e.clientY < r.top || e.clientY > r.bottom) continue;
+        const id = el.getAttribute('data-id') ?? '';
+        if (!id || id === moved) return null;
+        const edge = Math.min(64, r.width * 0.2);
+        const side = e.clientX <= r.left + edge && e.clientX >= r.left - 60 ? 'left' : e.clientX >= r.right - edge && e.clientX <= r.right + 60 ? 'right' : null;
+        if (!side) return null;
+        const inRow = placedRows(doc).find((x) => x.members.includes(id));
+        if (!inRow?.members.includes(moved) && rowSizeOf(id) >= MAX_COLUMNS) return null;
+        return { id, side, rect: r };
+      }
+      return null;
+    };
+    const onStart = () => {
+      try {
+        dragged.current = editor.getTextCursorPosition().block.id;
+      } catch {
+        dragged.current = null;
+      }
+    };
+    const onOver = (e: DragEvent) => {
+      if (!e.dataTransfer?.types.includes('blocknote/html')) return;
+      const hit = aim(e);
+      if (!hit) return setHint(null);
+      clearDropCursor();
+      e.preventDefault();
+      e.stopPropagation();
+      setHint({ left: hit.side === 'left' ? hit.rect.left - 14 : hit.rect.right + 12, top: hit.rect.top, height: hit.rect.height });
+    };
+    const onDrop = (e: DragEvent) => {
+      const hit = e.dataTransfer?.types.includes('blocknote/html') ? aim(e) : null;
+      setHint(null);
+      if (!hit || !dragged.current) return;
+      e.preventDefault();
+      e.stopPropagation();
+      clearDropCursor();
+      dropBeside(editor, doc, dragged.current, hit.id, hit.side);
+      dragged.current = null;
+    };
+    const onEnd = () => {
+      dragged.current = null;
+      setHint(null);
+    };
+    // bubbling: BlockNote's drag handle has already selected the block it is dragging by the time this runs
+    document.addEventListener('dragstart', onStart);
+    document.addEventListener('dragover', onOver, true);
+    document.addEventListener('drop', onDrop, true);
+    document.addEventListener('dragend', onEnd);
+    return () => {
+      document.removeEventListener('dragstart', onStart);
+      document.removeEventListener('dragover', onOver, true);
+      document.removeEventListener('drop', onDrop, true);
+      document.removeEventListener('dragend', onEnd);
+    };
+  }, [editor, doc, canEdit, phone]);
+
+  // Drag a gap to resize the two columns beside it (snapping to twelfths).
+  const resize = (h: (typeof handles)[number]) => (down: React.PointerEvent) => {
+    down.preventDefault();
+    const layouts = doc.getMap<string>('layouts');
+    const start = down.clientX;
+    const grid = document.querySelector<HTMLElement>('.page .bn-editor > .bn-block-group')?.getBoundingClientRect().width ?? 1;
+    const unit = grid / 12;
+    const base = h.row.spans.slice();
+    const move = (e: PointerEvent) => {
+      const step = Math.round((e.clientX - start) / unit);
+      const left = Math.min(Math.max(base[h.index]! + step, MIN_SPAN), base[h.index]! + base[h.index + 1]! - MIN_SPAN);
+      const spans = base.slice();
+      spans[h.index + 1] = base[h.index]! + base[h.index + 1]! - left;
+      spans[h.index] = left;
+      doc.transact(() => h.row.members.forEach((id, i) => layouts.set(id, JSON.stringify({ r: h.row.id, s: spans[i] }))));
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
+
+  if (phone || !canEdit) return null;
+  return (
+    <>
+      {hint && <div className="column-drop-hint" style={{ left: hint.left, top: hint.top, height: hint.height }} />}
+      {handles.map((h) => (
+        <div
+          key={`${h.row.id}-${h.index}`}
+          className="column-handle"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize columns"
+          style={{ left: h.x - 7, top: h.top, height: h.height }}
+          onPointerDown={resize(h)}
+        >
+          <span />
+        </div>
+      ))}
+    </>
+  );
+}
+
+/** The same thing without dragging, for the selected block: put it beside the block above, or back to full width. */
+function ColumnsButton({ doc }: { doc: Y.Doc }) {
   const Components = useComponentsContext()!;
   const editor = useBlockNoteEditor<any, any, any>();
   const blocks = useSelectedBlocks(editor);
   const [open, setOpen] = useState(false);
   const phone = useMediaQuery('(max-width: 48em)');
-  const block = blocks[0];
-  const layouts = doc.getMap<string>('layouts');
   const [, bump] = useState(0);
+  const layouts = doc.getMap<string>('layouts');
   useEffect(() => {
     const on = () => bump((n) => n + 1);
     layouts.observe(on);
     return () => layouts.unobserve(on);
   }, [layouts]);
+  const block = blocks[0];
   // Phones show every block at full width, so there is nothing to arrange there.
   if (!block || phone) return null;
-  const current = parseLayout(layouts.get(block.id));
-  const save = (next: BlockLayout) => {
-    const clean: BlockLayout = {};
-    if (next.p) clean.p = next.p;
-    if (next.w && next.w < 100) clean.w = next.w;
-    if (next.c) clean.c = true;
-    if (Object.keys(clean).length) layouts.set(block.id, JSON.stringify(clean));
-    else layouts.delete(block.id);
+  const inRow = placedRows(doc).find((r) => r.members.includes(block.id));
+  const above = editor.getPrevBlock(block);
+  const below = editor.getNextBlock(block);
+  const topLevel = editor.document.some((b: { id: string }) => b.id === block.id);
+  const act = (fn: () => void) => () => {
+    fn();
+    setOpen(false);
   };
-  const widths = ['auto', '25', '33', '50', '66', '75', '100'];
+  const item = (label: string, hint: string, onClick: () => void, disabled = false) => (
+    <Button variant="subtle" color="gray" size="compact-sm" justify="flex-start" fullWidth disabled={disabled} onClick={act(onClick)} title={hint}>
+      {label}
+    </Button>
+  );
   return (
-    <Popover opened={open} onChange={setOpen} position="bottom" shadow="md" withinPortal={false} floatingStrategy={phone ? 'fixed' : 'absolute'} trapFocus={false} closeOnClickOutside={false}>
+    <Popover opened={open} onChange={setOpen} position="bottom" shadow="md" withinPortal={false} floatingStrategy="absolute" trapFocus={false} closeOnClickOutside={false}>
       <Popover.Target>
         <div>
           <Components.FormattingToolbar.Button
             className="bn-button"
-            label="Block layout"
-            mainTooltip="Block layout: position and width"
-            icon={<IconLayout2 size={18} />}
-            isSelected={open || Object.keys(current).length > 0}
+            label="Columns"
+            mainTooltip="Columns: put blocks side by side (or drag a block to another block's edge)"
+            icon={<IconLayoutColumns size={18} />}
+            isSelected={open || !!inRow}
             onClick={() => setOpen((o) => !o)}
           />
         </div>
       </Popover.Target>
-      {/* A mouse press must not move focus out of the editor, or the selection (and this toolbar) would go. */}
-      <Popover.Dropdown w={320} onMouseDown={(e) => e.preventDefault()}>
-        <Stack gap="xs">
-          <Text size="sm" fw={600}>Block layout</Text>
-          <Text size="xs" c="dimmed">Position</Text>
-          <SegmentedControl
-            size="xs"
-            fullWidth
-            aria-label="Position"
-            value={current.p ?? 'flow'}
-            onChange={(v) => save({ ...current, p: v === 'flow' ? undefined : (v as BlockLayout['p']) })}
-            data={[{ value: 'flow', label: 'In flow' }, { value: 'left', label: 'Float left' }, { value: 'center', label: 'Centre' }, { value: 'right', label: 'Float right' }]}
-          />
-          <Text size="xs" c="dimmed">Width</Text>
-          <SegmentedControl
-            size="xs"
-            fullWidth
-            aria-label="Width"
-            value={current.w ? String(current.w) : 'auto'}
-            onChange={(v) => save({ ...current, w: v === 'auto' ? undefined : Number(v) })}
-            data={widths.map((w) => ({ value: w, label: w === 'auto' ? 'Auto' : `${w}%` }))}
-          />
-          <Checkbox size="xs" label="Start on a new line" checked={!!current.c} onChange={(e) => save({ ...current, c: e.currentTarget.checked })} />
-          <Group justify="space-between">
-            <Text size="xs" c="dimmed" style={{ flex: 1 }}>Floated blocks let the text wrap round them. Two blocks floated left at 48% sit side by side.</Text>
-            <Button size="compact-xs" variant="subtle" onClick={() => save({})} disabled={!Object.keys(current).length}>Reset</Button>
-          </Group>
+      <Popover.Dropdown w={260} onMouseDown={(e) => e.preventDefault()}>
+        <Stack gap={2}>
+          <Text size="sm" fw={600} mb={2}>Columns</Text>
+          {item('Beside the block above', 'Make a row of this block and the one above it', () => above && dropBeside(editor, doc, block.id, above.id, 'right'), !topLevel || !above || (!inRow?.members.includes(above.id) && (placedRows(doc).find((r) => r.members.includes(above.id))?.members.length ?? 1) >= MAX_COLUMNS))}
+          {item('Beside the block below', 'Make a row of this block and the one below it', () => below && dropBeside(editor, doc, block.id, below.id, 'left'), !topLevel || !below)}
+          {item('Equal widths', 'Share the row evenly', () => inRow && doc.transact(() => inRow.members.forEach((id) => layouts.set(id, JSON.stringify({ r: inRow.id })))), !inRow)}
+          {item('Full width again', 'Take this block out of its row', () => leaveRow(doc, block.id), !inRow)}
+          <Text size="xs" c="dimmed" mt={4}>Tip: drag a block by its handle to the left or right edge of another block, and drag the gap between columns to resize.</Text>
         </Stack>
       </Popover.Dropdown>
     </Popover>
