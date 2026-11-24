@@ -365,11 +365,18 @@ await anon.expect(401, 'POST', `/api/pages/${sPage.id}/comments`, { body: 'anon'
 await anon.expect(403, 'GET', `/api/pages/${sPage.id}/comments`); // a published page doesn't show the discussion
 await anon.expect(403, 'GET', `/api/pages/${sPage.id}/versions`); // nor its history
 await anon.expect(403, 'GET', `/api/pages/${sPage.id}/versions/${v1.id}/content`);
-const anonLive = await anon.connect(sPage.id);
-write(anonLive.doc, 'anonymous edit');
-await sleep(600);
-assert.doesNotMatch(text(a.doc), /anonymous edit/);
-anonLive.close();
+// guests read a snapshot over HTTP: no live connection at all
+const guestStatus = await new Promise((resolve) => {
+  const sock = new WebSocket(`${BASE.replace('http', 'ws')}/parties/page-room/${sPage.id}`, { headers: { cookie: anon.cookieHeader } });
+  sock.on('unexpected-response', (_req, res) => resolve(res.statusCode));
+  sock.on('open', () => { sock.close(); resolve(101); });
+  sock.on('error', () => {});
+});
+assert.equal(guestStatus, 401, 'a guest gets no live connection');
+const guestCopy = new Y.Doc();
+Y.applyUpdate(guestCopy, await anon.ok('GET', `/api/pages/${sPage.id}/snapshot`));
+assert.match(text(guestCopy), /./, 'but can read the page through the link');
+await anon.expect(401, 'GET', `/api/pages/${sOther.id}/snapshot`);
 // commenter link for a signed-in outsider
 const cLink = await alice.ok('POST', `/api/pages/${sPage.id}/shares`, { role: 'commenter', includeSubpages: false });
 await carol.ok('GET', `/api/share/${cLink.token}`);

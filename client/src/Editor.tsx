@@ -18,12 +18,13 @@ import { IconFileTypePdf, IconMessagePlus, IconMoodSmile } from '@tabler/icons-r
 import { useMediaQuery } from '@mantine/hooks';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import YProvider from 'y-partyserver/provider';
+import { Awareness } from 'y-protocols/awareness';
 import * as Y from 'yjs';
 import { api, TAB_ID, type Comment } from './api';
 import { attachLiveMode } from './liveMode';
 import { IconArticle, IconLayoutColumns } from '@tabler/icons-react';
 import { COMMENT_COLORS, HIGHLIGHT_SHAPES, PageContext, type HighlightShape, schema, type Schema } from './blocks';
-import { errorText, highlightPositions, takeFind } from './util';
+import { errorText, highlightPositions, pollWhenVisible, takeFind } from './util';
 
 export interface Person {
   accountId?: string;
@@ -249,14 +250,53 @@ function mapHighlight(
   return { newStart, newEnd, newQuote: newQuote || quote, changed };
 }
 
+const noLiveMode = { setLive() {}, isLive: () => false, flush() {}, dispose() {} };
+
+/**
+ * Stands in for the live connection when a guest reads a page: loads the page once over HTTP, then again when the
+ * tab is shown after a while (a few minutes at most), applying what's new. Same surface as the live provider
+ * (sync event, awareness, destroy) for the parts of the editor that use it, but nothing is ever sent.
+ */
+function snapshotProvider(doc: Y.Doc, pageId: string): YProvider {
+  const listeners = new Map<string, Set<(...args: any[]) => void>>();
+  const awareness = new Awareness(doc);
+  awareness.setLocalState(null); // a guest is not announced to anyone
+  let stopped = false;
+  const load = () =>
+    api.pageSnapshot(pageId).then(
+      (bytes) => {
+        if (stopped) return;
+        Y.applyUpdate(doc, bytes, 'snapshot');
+        listeners.get('sync')?.forEach((fn) => fn(true));
+      },
+      () => undefined
+    );
+  void load();
+  const stopPolling = pollWhenVisible(() => void load(), 180_000, 60_000);
+  return {
+    awareness,
+    on: (event: string, fn: (...args: any[]) => void) => (listeners.get(event) ?? listeners.set(event, new Set()).get(event)!).add(fn),
+    off: (event: string, fn: (...args: any[]) => void) => listeners.get(event)?.delete(fn),
+    destroy: () => {
+      stopped = true;
+      stopPolling();
+      awareness.destroy();
+    },
+  } as unknown as YProvider;
+}
+
 /**
  * One page: a Yjs document synced through the page's Durable Object. The
  * title and emoji are fields in the same document, so they sync like the
  * body. Mount with `key={pageId}` so each page gets a fresh connection.
  */
 export function PageEditor({ pageId, me, canEdit, canComment, dark, onTitle, onIcon, onMessage, onEditor, onComment, onError }: Props) {
+  // A guest (not signed in) reads a snapshot fetched over HTTP and opens no live connection, so they send
+  // nothing to the room and never show up in anyone's list of who is on the page.
+  const guest = !me.accountId;
   const [{ doc, provider, liveMode }] = useState(() => {
     const doc = new Y.Doc();
+    if (guest) return { doc, provider: snapshotProvider(doc, pageId), liveMode: noLiveMode };
     const provider = new YProvider(window.location.host, pageId, doc, {
       party: 'page-room',
       protocol: window.location.protocol === 'https:' ? 'wss' : 'ws',
@@ -355,8 +395,9 @@ export function PageEditor({ pageId, me, canEdit, canComment, dark, onTitle, onI
       provider.awareness.getStates().forEach((state, id) => {
         const u = state.user as Partial<Person> | undefined;
         const name = u?.name?.trim();
-        if (id !== doc.clientID && u && name) {
-          const key = u.accountId?.trim() || String(id);
+        // only signed-in people are listed (a guest has no account, and connects to nothing anyway)
+        if (id !== doc.clientID && u && name && u.accountId?.trim()) {
+          const key = u.accountId.trim();
           if (!seenIds.has(key)) {
             seenIds.add(key);
             list.push({ id, accountId: u.accountId?.trim(), name, color: u.color ?? '#888' });
@@ -534,12 +575,12 @@ export function PageEditor({ pageId, me, canEdit, canComment, dark, onTitle, onI
 
   const members = useMemo(() => {
     const ownId = me.accountId?.trim();
-    const list: Peer[] = [{ id: -1, name: me.name, color: me.color }];
+    const list: Peer[] = guest ? [] : [{ id: -1, name: me.name, color: me.color }];
     peers.forEach((peer) => {
       if (!ownId || peer.accountId !== ownId) list.push(peer);
     });
     return list;
-  }, [me, peers]);
+  }, [me, peers, guest]);
 
   // Handed out once the document has loaded, so blocks added from outside
   // (uploads, quotes) land in the real document.
@@ -1003,7 +1044,7 @@ export function PageEditor({ pageId, me, canEdit, canComment, dark, onTitle, onI
       )}
       <Group justify="space-between" className="page-bar">
         <Text size="xs" c="dimmed">
-          {!synced ? 'Connecting…' : saveNote || (editable ? 'Live · editing' : 'Live · reading')}
+          {!synced ? 'Connecting…' : saveNote || (guest ? 'Shared page' : editable ? 'Live · editing' : 'Live · reading')}
         </Text>
         <Group gap="sm">
           {canEdit && synced && (
@@ -1036,7 +1077,7 @@ export function PageEditor({ pageId, me, canEdit, canComment, dark, onTitle, onI
           )}
           {members.length > 0 && (
             <Avatar.Group>
-              {members.slice(0, 6).map((p) => (
+              {members.slice(0, 3).map((p) => (
               <Popover
                 key={p.id}
                 opened={selectedMemberId === p.id}
@@ -1065,18 +1106,18 @@ export function PageEditor({ pageId, me, canEdit, canComment, dark, onTitle, onI
                 </Popover.Dropdown>
               </Popover>
               ))}
-              {members.length > 6 && (
+              {members.length > 3 && (
               <Popover opened={overflowOpen} onChange={setOverflowOpen} position="bottom-end" shadow="md" withinPortal>
                 <Popover.Target>
-                  <UnstyledButton aria-label={`View ${members.length - 6} more members`}>
+                  <UnstyledButton aria-label={`View ${members.length - 3} more members`}>
                     <Avatar size="sm" radius="xl" color="gray" variant="filled">
-                      +{members.length - 6}
+                      +{members.length - 3}
                     </Avatar>
                   </UnstyledButton>
                 </Popover.Target>
                 <Popover.Dropdown w={220}>
                   <Stack gap="xs">
-                    {members.slice(6).map((p) => (
+                    {members.slice(3).map((p) => (
                       <Group key={p.id} gap="sm" wrap="nowrap">
                         <Avatar size="sm" radius="xl" color={p.color} variant="filled" styles={{ root: { background: p.color } }}>
                           {p.name.slice(0, 1).toUpperCase()}

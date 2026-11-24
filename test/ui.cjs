@@ -251,9 +251,12 @@ const opened = []; // pages, for a screenshot of each when something fails
   const url = await alice.getByRole('dialog').locator('input[value^="http"]').first().inputValue();
   await alice.keyboard.press('Escape');
   const visitor = await ctx('visitor');
+  let guestSockets = 0;
+  visitor.on('websocket', () => guestSockets++);
   await visitor.goto(url);
   await editorHas(visitor, 'Two engineers in Q2.');
   assert.equal(await visitor.getAttribute('.bn-editor', 'contenteditable'), 'false', 'visitor is read-only');
+  assert.equal(guestSockets, 0, 'a guest opens no live connection');
   assert.equal(await btn(visitor, 'Share').count(), 0);
   assert.equal(await visitor.getByRole('button', { name: 'History' }).count(), 0, 'no history through a link');
   console.log('✓ private project hidden; public link is read-only');
@@ -329,7 +332,15 @@ const opened = []; // pages, for a screenshot of each when something fails
   const side = await rows(alice);
   assert.ok(Math.abs(side.first.y - side.second.y) < 4 && side.second.x > side.first.x + 100, 'dropping on the right edge puts the blocks side by side');
   assert.ok(Math.abs(side.first.w - side.second.w) < 4, 'in equal columns');
-  await visitor.waitForFunction(() => document.querySelector('style[data-block-layouts]')?.textContent.includes('span 6'), null, { timeout: 10000 });
+  // a guest has a snapshot, not a live view: they see the change when they open the page again (edits reach the room within a couple of seconds)
+  for (let i = 0; ; i++) {
+    await visitor.reload();
+    await visitor.locator('.bn-editor').waitFor();
+    await visitor.waitForTimeout(800);
+    if (await visitor.evaluate(() => !!document.querySelector('style[data-block-layouts]')?.textContent.includes('span 6'))) break;
+    assert.ok(i < 8, 'the guest eventually sees the columns');
+  }
+  assert.equal(await alice.getByLabel('Guest member details').count(), 0, 'a guest is not listed among the people on the page');
   const theirs = await rows(visitor);
   assert.ok(Math.abs(theirs.first.y - theirs.second.y) < 4 && theirs.second.x > theirs.first.x + 100, 'a reader sees the columns live');
   // a reader of a shared page gets no editing toolbar, and no column kept free for comments
@@ -337,7 +348,8 @@ const opened = []; // pages, for a screenshot of each when something fails
   await visitor.waitForTimeout(600);
   assert.equal(await visitor.locator('.bn-formatting-toolbar').count(), 0, 'a reader gets no editing toolbar');
   assert.equal(await visitor.locator('.right-col').evaluate((e) => e.getBoundingClientRect().width), 0, 'no right column is kept free on a read-only share');
-  assert.ok(await visitor.evaluate(() => document.querySelector('.page').getBoundingClientRect().width >= innerWidth - 2), 'the page fills the window');
+  const col = await visitor.evaluate(() => { const r = document.querySelector('.page').getBoundingClientRect(); return { w: Math.round(r.width), left: Math.round(r.left), right: Math.round(innerWidth - r.right) }; });
+  assert.ok(col.w <= 1041 && Math.abs(col.left - col.right) <= 2, 'the reading column keeps its width and sits centred when no comment column is kept');
   // drag the gap to make the first column wider
   await alice.locator('.page-layout').hover();
   const gap = alice.locator('.column-handle').first();

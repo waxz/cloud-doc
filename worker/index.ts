@@ -95,6 +95,7 @@ route('GET', '/api/pages/:id/delete-preview', (r, e, u, [id]) => files.deletePre
 route('GET', '/api/pages/:id/files', (r, e, u, [id]) => files.listFiles(r, e, u, id!));
 route('GET', '/api/files/:f/:name', (r, e, u, [f]) => files.downloadFile(r, e, u, f!));
 route('DELETE', '/api/files/:f', (r, e, u, [f]) => files.deleteFile(r, e, u, f!));
+route('GET', '/api/pages/:id/snapshot', (r, e, u, [id]) => pages.pageSnapshot(r, e, u, id!));
 route('GET', '/api/pages/:id/versions', (r, e, u, [id]) => pages.listVersions(r, e, u, id!));
 route('POST', '/api/pages/:id/versions', (r, e, u, [id]) => pages.saveVersion(r, e, u, id!));
 route('GET', '/api/pages/:id/versions/:v/content', (r, e, u, [id, v]) => pages.versionContent(r, e, u, id!, v!));
@@ -121,6 +122,9 @@ route('GET', '/api/share/:t', (r, e, u, [t]) => pages.openShare(e, u, t!));
 
 /** Live sync: only for people who can view the page, with their role passed to the room. */
 async function sync(req: Request, env: Env, user: User | null): Promise<Response> {
+  // Guests (not signed in) read a one-off snapshot over HTTP instead: a live connection per reader is a billed
+  // request stream, and a guest has nothing to share with the people editing.
+  if (!user) return new Response('guests read a snapshot of the page; sign in to join it live', { status: 401 });
   // Only this site's pages may open a live connection (the session cookie is Lax, which already
   // keeps it off cross-site sockets; this is the second lock).
   const origin = req.headers.get('origin');

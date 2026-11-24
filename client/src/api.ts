@@ -382,6 +382,12 @@ export const api = {
   deletePreview: (id: string) => call<DeletePreview>('GET', `/api/pages/${id}/delete-preview`),
   workspaceFiles: (wid: string) => call<{ files: WorkspaceFile[] }>('GET', `/api/workspaces/${wid}/files`),
 
+  /** The page's current content as Yjs bytes, for readers without a live connection. */
+  async pageSnapshot(id: string): Promise<Uint8Array> {
+    const res = await fetch(`/api/pages/${id}/snapshot`, { headers: { 'x-tab-id': TAB_ID } });
+    if (!res.ok) throw new ApiError(res.status, 'could not load this page');
+    return new Uint8Array(await res.arrayBuffer());
+  },
   versions: (id: string) => call<Version[]>('GET', `/api/pages/${id}/versions`),
   saveVersion: (id: string) => call<Version>('POST', `/api/pages/${id}/versions`),
   async versionContent(id: string, vid: string): Promise<Uint8Array> {
