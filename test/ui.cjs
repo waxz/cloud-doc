@@ -444,6 +444,18 @@ const opened = []; // pages, for a screenshot of each when something fails
   await phone.waitForFunction(() => ![...document.querySelectorAll('.page .bn-editor > .bn-block-group > .bn-block-outer')].some((o) => getComputedStyle(o).borderLeftWidth === '3px'));
   console.log('✓ phone: drawer navigation, page with media, panels as bottom sheets, fields 16px, toolbar fits, columns editable');
 
+  // a second workspace, made from the workspace menu: lands in it, with no error about it not existing
+  await alice.locator('.ws-switch').click();
+  await alice.getByRole('menuitem', { name: 'New workspace' }).click();
+  await alice.getByRole('dialog').getByLabel('Workspace name').fill('Second space');
+  await alice.getByRole('dialog').getByRole('button', { name: 'Create', exact: true }).click();
+  await alice.locator('.ws-switch').getByText(/Second space/).waitFor({ timeout: 10000 });
+  await alice.waitForTimeout(1500);
+  assert.equal(await alice.getByText("That workspace doesn't exist").count(), 0, 'no "workspace doesn\'t exist" error after creating one');
+  assert.match(alice.url(), /\/w\//);
+  assert.ok((await alice.locator('.ws-switch').textContent()).includes('Second space'), 'and it opens the new workspace, not the old one');
+  console.log('✓ a new workspace opens without an error');
+
   // recovery mode last: it ends the admin's other sessions
   if (process.env.RECOVERY_SECRET) {
     await stranger.getByRole('button', { name: /use recovery mode/ }).click();
