@@ -80,9 +80,8 @@ body { background: var(--mantine-color-body); -webkit-tap-highlight-color: trans
 .crumb.current { color: var(--mantine-color-text); font-weight: 500; }
 .page { max-width: 1040px; margin: 0 auto; padding: 4px 0 160px; }
 .is-wide .page { max-width: none; }
-/* with the explorer hidden the reading column is allowed to grow into the room it left */
-.nav-hidden .page { max-width: 1400px; }
-.nav-hidden .is-wide .page { max-width: none; }
+/* The reading column is the same width in every mode (editing, reading, shared, panel open or not, explorer shown or
+   hidden); "Full width" is the one setting that changes it. */
 .page-bar { height: 32px; padding: 0 54px; }
 .title-row { padding: 20px 54px 4px; }
 .page-icon { display: inline-block; font-size: 44px; line-height: 1.1; margin-bottom: 4px; border-radius: 8px; padding: 2px; }
@@ -508,7 +507,6 @@ button.page-icon:hover { background: var(--hover); }
 .page .bn-file-caption { color: var(--muted); line-height: 1.4; text-align: left; }
 .page .bn-editor::after { content: ''; display: block; clear: both; }
 /* Article: a serif reading page with a narrower column, roomy lines and clear links. */
-.page.is-article { max-width: 920px; }
 .page.is-article .bn-container, .page.is-article .bn-editor { --bn-font-family: Georgia, 'Times New Roman', 'Noto Serif', serif; font-family: Georgia, 'Times New Roman', 'Noto Serif', serif; }
 .page.is-article .title { font-family: Georgia, 'Times New Roman', 'Noto Serif', serif; font-weight: 700; }
 .page.is-article .bn-block-content { font-size: 19px; line-height: 1.8; }
@@ -543,8 +541,5 @@ button.page-icon:hover { background: var(--hover); }
 .page .bn-visual-media { box-shadow: 0 1px 3px rgb(0 0 0 / 12%); }
 .page-bar .mantine-SegmentedControl-root { border-radius: 10px; }
 
-/* A shared page opened only to read: no column kept free for comments, and the page fills the window. */
+/* A shared page opened only to read keeps no column free for comments: the same reading column, centred in the window. */
 .review-only .right-col:not(.has-panel) { width: 0; }
-.review-only .page, .review-only.is-wide .page { max-width: none; }
-.review-only .title-row, .review-only .page-bar { padding-inline: clamp(16px, 4vw, 64px); }
-.review-only .page .bn-editor { padding-inline: clamp(16px, 4vw, 64px); }

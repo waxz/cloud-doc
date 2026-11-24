@@ -14,7 +14,7 @@ import { requireUser, type User } from './auth.js';
 import { deletePageHistory, storageById, WebDav, workspaceOfPage } from './storage.js';
 import { deleteTreeFiles } from './files.js';
 import type { Env } from './env.js';
-import { room, tellRoom } from './rooms.js';
+import { exportRoom, room, tellRoom } from './rooms.js';
 import { cookie, HttpError, json, newId, noContent, randomToken, readJson, str } from './http.js';
 
 const PAGE_COLS = 'id, project_id, parent_id, title, icon, position, updated_at';
@@ -588,6 +588,15 @@ export async function updateComment(req: Request, env: Env, u: User | null, cid:
   const anchorOnly = Object.keys(b).every((k) => k === 'quoteStart' || k === 'quoteEnd' || k === 'quote');
   if (!anchorOnly) await tellRoom(env, c.page_id, '/notify', { type: 'comments', from: req.headers.get('x-tab-id') });
   return noContent();
+}
+
+/**
+ * The page as it is now, as Yjs bytes, for readers who don't open a live connection (guests on a share link).
+ * Anyone who can view the page may fetch it; it is the same content the live connection would have sent.
+ */
+export async function pageSnapshot(req: Request, env: Env, u: User | null, id: string): Promise<Response> {
+  await requirePage(req, env, u, id, 'viewer');
+  return new Response(await exportRoom(env, id), { headers: { 'content-type': 'application/octet-stream' } });
 }
 
 /**
