@@ -51,7 +51,8 @@ interface Props {
   pageId?: string;
   commentId?: string;
   dark: boolean;
-  onMeChanged: () => void;
+  /** Reloads the signed-in user's workspaces; resolves once they are in place. */
+  onMeChanged: () => void | Promise<unknown>;
   onSignOut: () => void;
   onError: (message: string) => void;
 }
@@ -573,8 +574,9 @@ export function Shell({ me, workspace, pageId, commentId, dark, onMeChanged, onS
       <NewWorkspace
         opened={newWorkspace}
         onClose={() => setNewWorkspace(false)}
-        onCreated={(w) => {
-          onMeChanged();
+        onCreated={async (w) => {
+          // The new workspace must be in the list before its address opens, or the app thinks it doesn't exist.
+          await onMeChanged();
           navigate(href.workspace(w.id));
         }}
         onError={onError}

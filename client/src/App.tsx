@@ -1,6 +1,6 @@
 import { WorkspaceForm } from './WorkspaceForm';
 import { Alert, Button, Loader, Paper, Stack, Text, TextInput, Title, useComputedColorScheme } from '@mantine/core';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, api, type Me } from './api';
 import { AuthScreen } from './AuthScreen';
 import { href, navigate, useRoute } from './route';
@@ -41,12 +41,20 @@ export function App() {
   // Home (or a workspace you're not in): go to your first workspace, if any.
   const known = route.name === 'workspace' && !!me?.workspaces.some((w) => w.id === route.wid);
   const firstId = me?.workspaces[0]?.id;
+  // A workspace address we don't know yet (just created, or just joined): reload the list once before deciding it isn't there.
+  const refreshedFor = useRef('');
   useEffect(() => {
-    if (me && route.name !== 'share' && !known && firstId) {
+    if (!me || route.name === 'share' || known) return;
+    if (route.name === 'workspace' && refreshedFor.current !== route.wid) {
+      refreshedFor.current = route.wid;
+      void loadMe();
+      return;
+    }
+    if (firstId) {
       if (route.name === 'workspace') setError("That workspace doesn't exist, or you aren't a member of it.");
       navigate(href.workspace(firstId));
     }
-  }, [me, route.name, known, firstId]);
+  }, [me, route.name, route.name === 'workspace' ? route.wid : '', known, firstId, loadMe]);
 
   const banner = error && (
     <Alert color="red" variant="filled" className="error" withCloseButton onClose={() => setError('')}>
