@@ -765,6 +765,227 @@ console.log('✓ share links: public read, subpages, commenter for outsiders, re
   console.log('✓ storage address: server URL + folder, checked, created on test or save');
 }
 
+// --- workspace limits: a limited playground that can't be abused ---
+{
+  const lim = await alice.ok('POST', '/api/workspaces', { name: `Playground ${run}`, storageId: home.id });
+  await alice.ok('POST', `/api/workspaces/${lim.id}/members`, { email: bob.email, role: 'member' });
+  const proj = (await alice.ok('GET', `/api/workspaces/${lim.id}/projects`))[0];
+  const usage = () => alice.ok('GET', `/api/workspaces/${lim.id}/usage`);
+  const bytes = (n) => new Uint8Array(n).fill(7);
+  const upload = (page, n, name = 'x.bin') => alice.call('POST', `/api/pages/${page}/files`, bytes(n), { 'content-type': 'application/octet-stream', 'x-filename': name });
+
+  // only the instance admin sets limits; owners can see usage, plain members can't
+  await bob.expect(403, 'PUT', `/api/workspaces/${lim.id}/limits`, { storageLimit: 5000 });
+  await bob.expect(403, 'GET', `/api/workspaces/${lim.id}/usage`);
+  await alice.expect(400, 'PUT', `/api/workspaces/${lim.id}/limits`, { storageLimit: -5 });
+  await alice.expect(400, 'PUT', `/api/workspaces/${lim.id}/limits`, { maxPages: 'lots' });
+  assert.deepEqual(await alice.ok('PUT', `/api/workspaces/${lim.id}/limits`, { storageLimit: 5000, maxPages: 4 }), { storageLimit: 5000, maxPages: 4 });
+  assert.equal((await usage()).storageLimit, 5000);
+
+  // storage: two 2000-byte files fit, a third doesn't, and nothing is left behind by the refusal
+  const pg = await alice.ok('POST', `/api/projects/${proj.id}/pages`, {});
+  const f1 = await upload(pg.id, 2000, 'one.bin');
+  assert.equal(f1.status, 201);
+  assert.equal((await upload(pg.id, 2000, 'two.bin')).status, 201);
+  const refused = await upload(pg.id, 2000, 'three.bin');
+  assert.equal(refused.status, 413);
+  assert.match(refused.data.error, /storage limit/);
+  assert.equal((await usage()).files, 4000, 'a refused upload is not counted');
+  assert.equal((await usage()).fileCount, 2);
+  assert.ok(![...dav.files.keys()].some((k) => k.includes('three.bin')), 'and leaves nothing in the storage');
+
+  // abuse: many uploads at once can't squeeze past the limit (1000 bytes free, 600-byte files)
+  const burst = await Promise.all(Array.from({ length: 8 }, (_, i) => upload(pg.id, 600, `burst-${i}.bin`)));
+  const got = burst.filter((r) => r.status === 201).length;
+  const after = await usage();
+  assert.ok(after.bytes <= 5000, `parallel uploads stay within the limit (used ${after.bytes} of 5000)`);
+  assert.equal(after.files, 4000 + got * 600, 'and what is counted is exactly what was accepted');
+  assert.ok(got <= 1 && burst.every((r) => r.status === 201 || r.status === 413));
+  // rolled-back uploads leave no blobs behind
+  assert.equal([...dav.files.keys()].filter((k) => k.includes(`/${lim.id}/files/`)).length, after.fileCount, 'every stored blob has a row');
+
+  // deleting frees room
+  await alice.ok('DELETE', `/api/files/${f1.data.id}?force=1`);
+  assert.equal((await upload(pg.id, 1900, 'again.bin')).status, 201);
+
+  // history counts too: with the workspace exactly full, a named version is refused
+  const nowUsed = (await usage()).bytes;
+  await alice.ok('PUT', `/api/workspaces/${lim.id}/limits`, { storageLimit: nowUsed });
+  const ver = await alice.call('POST', `/api/pages/${pg.id}/versions`);
+  assert.equal(ver.status, 413, 'a new history version is refused when the workspace is full');
+  await alice.ok('PUT', `/api/workspaces/${lim.id}/limits`, { storageLimit: nowUsed + 100000 });
+  assert.equal((await alice.call('POST', `/api/pages/${pg.id}/versions`)).status, 201, 'and accepted once there is room');
+  assert.ok((await usage()).history > 0, 'history is part of what the workspace uses');
+
+  // pages: the limit holds, also against a burst
+  await alice.ok('PUT', `/api/workspaces/${lim.id}/limits`, { storageLimit: null, maxPages: 6 });
+  const made = await Promise.all(Array.from({ length: 10 }, () => alice.call('POST', `/api/projects/${proj.id}/pages`, {})));
+  assert.ok(made.every((r) => r.status === 201 || r.status === 403));
+  assert.equal((await usage()).pages, 6, 'never more pages than the limit, even when created at once');
+  assert.equal((await alice.call('POST', `/api/projects/${proj.id}/pages`, {})).status, 403);
+
+  // no limit again
+  await alice.ok('PUT', `/api/workspaces/${lim.id}/limits`, { storageLimit: null, maxPages: null });
+  assert.equal((await alice.call('POST', `/api/projects/${proj.id}/pages`, {})).status, 201);
+  assert.equal((await upload(pg.id, 3000)).status, 201);
+
+  // one file may not weigh more than the instance's cap
+  await bob.expect(403, 'PUT', '/api/admin/settings', { maxFileBytes: 100 });
+  assert.equal((await alice.ok('PUT', '/api/admin/settings', { maxFileBytes: 1500 })).maxFileBytes, 1500);
+  assert.equal((await upload(pg.id, 2000)).status, 413);
+  assert.equal((await upload(pg.id, 1000)).status, 201);
+  await alice.ok('PUT', '/api/admin/settings', { maxFileBytes: null });
+  assert.equal((await upload(pg.id, 2000)).status, 201);
+
+  // limits a NEW workspace starts with (the playground's defaults)
+  const set = await alice.ok('PUT', '/api/admin/settings', { defaultStorageLimit: 7777, defaultMaxPages: 9 });
+  assert.deepEqual([set.defaultStorageLimit, set.defaultMaxPages], [7777, 9]);
+  const fresh = await alice.ok('POST', '/api/workspaces', { name: `Fresh ${run}`, storageId: home.id });
+  const freshUsage = await alice.ok('GET', `/api/workspaces/${fresh.id}/usage`);
+  assert.deepEqual([freshUsage.storageLimit, freshUsage.maxPages], [7777, 9], 'a new workspace starts with the default limits');
+  assert.equal((await usage()).storageLimit, null, 'existing workspaces keep their own');
+  await alice.ok('PUT', '/api/admin/settings', { defaultStorageLimit: null, defaultMaxPages: null });
+  const free = await alice.ok('POST', '/api/workspaces', { name: `Free ${run}`, storageId: home.id });
+  assert.equal((await alice.ok('GET', `/api/workspaces/${free.id}/usage`)).storageLimit, null);
+  for (const w of [lim, fresh, free]) await alice.ok('DELETE', `/api/workspaces/${w.id}`);
+  console.log('✓ workspace limits: storage, history and pages enforced, parallel bursts held, file cap, defaults for new workspaces');
+}
+
+// --- read-only projects: a demo project nobody but admins edits, other projects open to every member ---
+{
+  const w = await alice.ok('POST', '/api/workspaces', { name: `Demo space ${run}`, storageId: home.id });
+  await alice.ok('POST', `/api/workspaces/${w.id}/members`, { email: bob.email, role: 'member' });
+  const general = (await alice.ok('GET', `/api/workspaces/${w.id}/projects`))[0];
+  const demo = await alice.ok('POST', `/api/workspaces/${w.id}/projects`, { name: 'Demo', readOnly: true });
+  assert.equal(demo.readOnly, true);
+  const seen = (await bob.ok('GET', `/api/workspaces/${w.id}/projects`)).find((x) => x.id === demo.id);
+  assert.deepEqual([seen.readOnly, seen.role], [true, 'viewer'], 'a member only reads a read-only project');
+  assert.equal((await bob.ok('GET', `/api/workspaces/${w.id}/projects`)).find((x) => x.id === general.id).role, 'editor', 'and edits the others');
+  assert.equal((await bob.call('POST', `/api/projects/${general.id}/pages`, {})).status, 201);
+  assert.equal((await bob.call('POST', `/api/projects/${demo.id}/pages`, {})).status, 403, 'a member cannot add to the demo project');
+  const demoPage = await alice.ok('POST', `/api/projects/${demo.id}/pages`, {}); // the workspace owner can
+  // live editing is refused too
+  const owner = await alice.connect(demoPage.id);
+  const reader = await bob.connect(demoPage.id);
+  write(reader.doc, 'bob was here');
+  await sleep(700);
+  assert.doesNotMatch(text(owner.doc), /bob was here/, "a member's edit to the demo project is ignored");
+  assert.equal((await bob.call('POST', `/api/pages/${demoPage.id}/files`, new Uint8Array(10), { 'content-type': 'application/octet-stream', 'x-filename': 'x.bin' })).status, 403, 'and so are uploads');
+  owner.close();
+  reader.close();
+  // only an admin of the project changes it
+  await bob.expect(403, 'PATCH', `/api/projects/${demo.id}`, { readOnly: false });
+  await alice.ok('PATCH', `/api/projects/${demo.id}`, { readOnly: false });
+  assert.equal((await bob.call('POST', `/api/projects/${demo.id}/pages`, {})).status, 201, 'editable again once the lock is off');
+  await alice.ok('PATCH', `/api/projects/${demo.id}`, { readOnly: true });
+  assert.equal((await bob.call('POST', `/api/projects/${demo.id}/pages`, {})).status, 403);
+
+  // --- history: usage and clearing ---
+  const hp = await alice.ok('POST', `/api/projects/${general.id}/pages`, {});
+  for (let i = 0; i < 3; i++) await alice.ok('POST', `/api/pages/${hp.id}/versions`);
+  const used = await alice.ok('GET', `/api/pages/${hp.id}/history-usage`);
+  assert.equal(used.versions, 3);
+  assert.ok(used.bytes > 0 && used.workspaceBytes >= used.bytes, "history is counted in the page's and the workspace's use");
+  await carol.expect(404, 'GET', `/api/pages/${hp.id}/history-usage`);
+  const list = await alice.ok('GET', `/api/pages/${hp.id}/versions`);
+  await alice.ok('DELETE', `/api/pages/${hp.id}/versions/${list[0].id}`);
+  assert.equal((await alice.ok('GET', `/api/pages/${hp.id}/history-usage`)).versions, 2, 'one version can be deleted');
+  assert.ok(![...dav.files.keys()].some((k) => k.includes(list[0].id)), 'and leaves the storage');
+  const autoClear = await alice.ok('DELETE', `/api/pages/${hp.id}/versions?scope=auto`);
+  assert.equal(autoClear.deleted, 0, 'clearing the automatic versions keeps the named ones');
+  await carol.expect(404, 'DELETE', `/api/pages/${hp.id}/versions?scope=all`);
+  let cleared = await alice.ok('DELETE', `/api/pages/${hp.id}/versions?scope=all`);
+  for (let i = 0; cleared.remaining > 0 && i < 20; i++) cleared = await alice.ok('DELETE', `/api/pages/${hp.id}/versions?scope=all`);
+  assert.equal((await alice.ok('GET', `/api/pages/${hp.id}/history-usage`)).versions, 0, 'clear all empties the history');
+  assert.ok(![...dav.files.keys()].some((k) => k.includes(`/${hp.id}/history/`)), 'and frees the storage');
+  await alice.ok('DELETE', `/api/workspaces/${w.id}`);
+  console.log('✓ read-only projects (live edits and uploads refused, lock only for admins); history usage and clearing');
+}
+
+// --- request limits per person ---
+{
+  const settings = '/api/admin/settings';
+  assert.equal((await alice.ok('GET', settings)).ratePerMinute, 600, 'a sensible limit is on by default');
+  await alice.expect(400, 'PUT', settings, { ratePerMinute: -1 });
+  await bob.expect(403, 'PUT', settings, { ratePerMinute: 5 });
+  await alice.ok('PUT', settings, { ratePerMinute: 25 });
+  const burst = await Promise.all(Array.from({ length: 60 }, () => bob.call('GET', '/api/me')));
+  assert.ok(burst.filter((r) => r.status === 200).length <= 25, 'a member is held to the per-minute limit');
+  assert.ok(burst.filter((r) => r.status === 429).length >= 35, 'the rest are told to slow down');
+  const raw = await fetch(`${BASE}/api/me`, { headers: { cookie: bob.cookieHeader } });
+  assert.equal(raw.status, 429);
+  assert.ok(Number(raw.headers.get('retry-after')) > 0, 'with how long to wait');
+  assert.ok((await Promise.all(Array.from({ length: 80 }, () => alice.call('GET', '/api/me')))).every((r) => r.status === 200), 'the admin is not limited');
+  const guests = await Promise.all(Array.from({ length: 100 }, () => anon.call('GET', '/api/auth/status')));
+  assert.ok(guests.some((r) => r.status === 429), 'guests are limited by address');
+  // per hour
+  await alice.ok('PUT', settings, { ratePerMinute: 0, ratePerHour: 15 });
+  const hourly = [];
+  for (let i = 0; i < 30; i++) hourly.push((await carol.call('GET', '/api/me')).status);
+  assert.ok(hourly.includes(429) && hourly.indexOf(429) <= 16, 'the hourly limit cuts a person off');
+  // back to the defaults
+  await alice.ok('PUT', settings, { ratePerMinute: null, ratePerHour: null });
+  assert.equal((await alice.ok('GET', settings)).ratePerMinute, 600);
+  assert.equal((await bob.call('GET', '/api/me')).status, 200);
+  assert.equal((await carol.call('GET', '/api/me')).status, 200);
+  console.log('✓ request limits: per minute and per hour, guests by address, admin exempt, retry-after');
+}
+
+// --- open registration for a limited playground ---
+{
+  const settings = '/api/admin/settings';
+  const pw = await alice.ok('POST', '/api/workspaces', { name: `Playground ${run}`, storageId: home.id });
+  const demo = await alice.ok('POST', `/api/workspaces/${pw.id}/projects`, { name: 'Demo', readOnly: true });
+  const general = (await alice.ok('GET', `/api/workspaces/${pw.id}/projects`)).find((p) => p.name === 'General');
+  const signupBody = (who) => ({ email: `${who}-${run}@example.com`, name: who, password: 'correct horse battery' });
+  await alice.expect(400, 'PUT', settings, { openRegistration: true }); // nowhere for new accounts to go
+  await bob.expect(403, 'PUT', settings, { openRegistration: true });
+  await alice.expect(404, 'PUT', settings, { playgroundWorkspace: 'no-such-workspace' });
+  await alice.ok('PUT', settings, { playgroundWorkspace: pw.id });
+  assert.equal((await anon.ok('GET', '/api/auth/status')).openSignup, false, 'closed until switched on');
+  assert.equal((await anon.call('POST', '/api/auth/signup', signupBody('early'))).status, 403);
+  assert.equal((await alice.ok('PUT', settings, { openRegistration: true })).openRegistration, true);
+  assert.equal((await anon.ok('GET', '/api/auth/status')).openSignup, true, 'the sign-in page offers it');
+
+  const pat = new Client('pat');
+  const made = await pat.call('POST', '/api/auth/signup', signupBody('pat'));
+  assert.equal(made.status, 201, 'anyone can sign up without a link');
+  assert.equal(made.data.user.role, 'member');
+  const me = await pat.ok('GET', '/api/me');
+  assert.deepEqual(me.workspaces.map((x) => x.id), [pw.id], 'and lands in the playground workspace');
+  assert.equal(me.canCreateWorkspaces, false);
+  await pat.expect(403, 'POST', '/api/workspaces', { name: 'my own', storageId: home.id });
+  const patProjects = await pat.ok('GET', `/api/workspaces/${pw.id}/projects`);
+  assert.equal(patProjects.find((p) => p.id === demo.id).role, 'viewer', 'the demo project is read-only for them');
+  assert.equal((await pat.call('POST', `/api/projects/${demo.id}/pages`, {})).status, 403);
+  assert.equal((await pat.call('POST', `/api/projects/${general.id}/pages`, {})).status, 201, 'the other projects are theirs to edit');
+  await pat.expect(403, 'GET', '/api/admin/users');
+
+  // a cap on accounts
+  const accounts = (await alice.ok('GET', settings)).accounts;
+  await alice.ok('PUT', settings, { playgroundMaxUsers: accounts });
+  assert.equal((await anon.ok('GET', '/api/auth/status')).openSignup, false, 'the cap closes it');
+  assert.equal((await anon.call('POST', '/api/auth/signup', signupBody('late'))).status, 403);
+  await alice.ok('PUT', settings, { playgroundMaxUsers: null });
+
+  // one address can only make a few accounts an hour
+  const results = [];
+  for (const who of ['p2', 'p3', 'p4', 'p5', 'p6', 'p7']) results.push((await new Client(who).call('POST', '/api/auth/signup', signupBody(who))).status);
+  assert.deepEqual(results.filter((x) => x === 201).length, 4, 'five sign-ups an hour from one address (one was used above)');
+  assert.ok(results.includes(429));
+
+  // switched off: closed again, existing accounts still work
+  await alice.ok('PUT', settings, { openRegistration: false });
+  assert.equal((await anon.call('POST', '/api/auth/signup', signupBody('after'))).status, 403);
+  assert.equal((await pat.call('GET', '/api/me')).status, 200);
+  // taking the workspace away closes it too
+  await alice.ok('PUT', settings, { openRegistration: true });
+  await alice.ok('PUT', settings, { playgroundWorkspace: null });
+  const closed = await alice.ok('GET', settings);
+  assert.deepEqual([closed.openRegistration, closed.playgroundWorkspace], [false, null]);
+  console.log('✓ open registration: switch, playground workspace, members only, cap, per-address limit, off again');
+}
+
 // --- admin contact email, and recovery mode ---
 {
   assert.equal((await anon.ok('GET', '/api/auth/status')).adminEmail, '', 'no contact email until the admin sets one');

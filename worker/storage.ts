@@ -1,6 +1,7 @@
 import type { Env } from './env.js';
 import { openPassword } from './secret.js';
 import { HttpError } from './http.js';
+import { getAppSetting } from './auth.js';
 
 /** A user's WebDAV folder (cloud-drive, Nextcloud, any WebDAV server). */
 export interface StorageRow {
@@ -318,4 +319,100 @@ export async function probeStorage(
   } catch (err) {
     return { ok: false, message: err instanceof Error ? err.message : String(err) };
   }
+}
+
+// ---------- workspace limits (for a limited playground) ----------
+
+export interface WorkspaceLimits {
+  /** Bytes of files plus page history; null = no limit. */
+  storageLimit: number | null;
+  maxPages: number | null;
+}
+
+export async function workspaceLimits(env: Env, wid: string): Promise<WorkspaceLimits> {
+  const row = await env.DB.prepare('SELECT storage_limit, max_pages FROM workspaces WHERE id = ?').bind(wid).first<{ storage_limit: number | null; max_pages: number | null }>();
+  return { storageLimit: row?.storage_limit ?? null, maxPages: row?.max_pages ?? null };
+}
+
+/** What a workspace keeps right now: file bytes, history bytes, page count. */
+export async function workspaceUsage(env: Env, wid: string): Promise<{ files: number; history: number; bytes: number; pages: number; fileCount: number }> {
+  const row = await env.DB.prepare(
+    `SELECT (SELECT COALESCE(SUM(size), 0) FROM files WHERE workspace_id = ?1) AS files,
+            (SELECT COUNT(*) FROM files WHERE workspace_id = ?1) AS file_count,
+            (SELECT COALESCE(SUM(v.size), 0) FROM page_versions v JOIN pages p ON p.id = v.page_id JOIN projects pr ON pr.id = p.project_id WHERE pr.workspace_id = ?1) AS history,
+            (SELECT COUNT(*) FROM pages p JOIN projects pr ON pr.id = p.project_id WHERE pr.workspace_id = ?1) AS pages`
+  )
+    .bind(wid)
+    .first<{ files: number; file_count: number; history: number; pages: number }>();
+  const files = row?.files ?? 0;
+  const history = row?.history ?? 0;
+  return { files, history, bytes: files + history, pages: row?.pages ?? 0, fileCount: row?.file_count ?? 0 };
+}
+
+/** The most one uploaded file may weigh on this instance (set by the admin); null = no cap. */
+export async function maxFileBytes(env: Env): Promise<number | null> {
+  const n = Number(await getAppSetting(env, 'max_file_bytes'));
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** Limits a new workspace starts with (set by the admin). */
+export async function defaultLimits(env: Env): Promise<WorkspaceLimits> {
+  const num = async (key: string) => {
+    const n = Number(await getAppSetting(env, key));
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+  };
+  return { storageLimit: await num('default_storage_limit'), maxPages: await num('default_max_pages') };
+}
+
+/** Throws 413 when `adding` more bytes would take the workspace past its storage limit. */
+export async function checkWorkspaceQuota(env: Env, wid: string, adding: number): Promise<void> {
+  const { storageLimit } = await workspaceLimits(env, wid);
+  if (storageLimit == null) return;
+  const { bytes } = await workspaceUsage(env, wid);
+  if (bytes + adding > storageLimit) {
+    throw new HttpError(413, `this workspace's storage limit is reached: ${mb(bytes)} of ${mb(storageLimit)} used`);
+  }
+}
+
+/**
+ * After a write: does this item sit past the storage limit? Items are ranked by the order they were inserted (the
+ * database writes one at a time, so that order is the same for everyone), and an item is kept only if everything
+ * inserted up to and including it fits. When uploads race, each passed the check on its own; this keeps exactly the
+ * ones that fit and undoes only the rest. (A file also counts all history, a version also counts all files: that
+ * can only make it stricter.)
+ */
+export async function pastStorageLimit(env: Env, wid: string, kind: 'file' | 'version', id: string): Promise<boolean> {
+  const { storageLimit } = await workspaceLimits(env, wid);
+  if (storageLimit == null) return false;
+  const files = kind === 'file' ? 'rowid <= (SELECT rowid FROM files WHERE id = ?2)' : '1';
+  const versions = kind === 'version' ? 'v.rowid <= (SELECT rowid FROM page_versions WHERE id = ?2)' : '1';
+  const row = await env.DB.prepare(
+    `SELECT (SELECT COALESCE(SUM(size), 0) FROM files WHERE workspace_id = ?1 AND ${files})
+          + (SELECT COALESCE(SUM(v.size), 0) FROM page_versions v JOIN pages p ON p.id = v.page_id JOIN projects pr ON pr.id = p.project_id
+             WHERE pr.workspace_id = ?1 AND ${versions}) AS bytes`
+  )
+    .bind(wid, id)
+    .first<{ bytes: number }>();
+  return (row?.bytes ?? 0) > storageLimit;
+}
+
+/** Throws 403 when the workspace already has as many pages as it may. */
+export async function checkPageLimit(env: Env, wid: string, adding = 1): Promise<void> {
+  const { maxPages } = await workspaceLimits(env, wid);
+  if (maxPages == null) return;
+  const { pages } = await workspaceUsage(env, wid);
+  if (pages + adding > maxPages) throw new HttpError(403, `this workspace is limited to ${maxPages} pages`);
+}
+
+/** After creating a page: is it beyond the page limit, counting pages in the order they were inserted? (See pastStorageLimit.) */
+export async function pastPageLimit(env: Env, wid: string, id: string): Promise<boolean> {
+  const { maxPages } = await workspaceLimits(env, wid);
+  if (maxPages == null) return false;
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM pages p JOIN projects pr ON pr.id = p.project_id
+     WHERE pr.workspace_id = ?1 AND p.rowid <= (SELECT rowid FROM pages WHERE id = ?2)`
+  )
+    .bind(wid, id)
+    .first<{ n: number }>();
+  return (row?.n ?? 0) > maxPages;
 }

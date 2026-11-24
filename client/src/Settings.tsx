@@ -1,4 +1,4 @@
-import { ActionIcon, Badge, Button, Divider, Group, Modal, MultiSelect, Select, Stack, Table, Text, TextInput } from '@mantine/core';
+import { ActionIcon, Badge, Button, Divider, Group, Modal, MultiSelect, Select, Stack, Switch, Table, Text, TextInput } from '@mantine/core';
 import { useCallback, useEffect, useState } from 'react';
 import {
   api,
@@ -15,6 +15,7 @@ import {
 } from './api';
 import { errorText } from './util';
 import { WorkspaceBackup } from './WorkspaceBackup';
+import { WorkspaceUsage } from './WorkspaceUsage';
 
 interface WorkspaceProps {
   workspace: Workspace;
@@ -101,6 +102,7 @@ export function WorkspaceSettings({ workspace, me, opened, onClose, onChanged, o
             </Button>
           )}
         </Group>
+        {isAdmin && <WorkspaceUsage workspaceId={workspace.id} me={me} onError={onError} />}
         {isAdmin && workspaceStorages && (
           <>
             <Divider label="WebDAV storages" labelPosition="left" />
@@ -230,12 +232,14 @@ interface ProjectProps {
 export function ProjectSettings({ project, workspaceId, opened, onClose, onChanged, onError }: ProjectProps) {
   const [name, setName] = useState('');
   const [defaultRole, setDefaultRole] = useState('editor');
+  const [readOnly, setReadOnly] = useState(false);
   const [members, setMembers] = useState<ProjectMember[]>([]);
 
   useEffect(() => {
     if (!opened) return;
     setName(project?.name ?? '');
     setDefaultRole(project ? (project.defaultRole ?? 'none') : 'editor');
+    setReadOnly(!!project?.readOnly);
     if (project) api.projectMembers(project.id).then(setMembers, (e) => onError(errorText(e)));
     else setMembers([]);
   }, [opened, project, onError]);
@@ -245,10 +249,10 @@ export function ProjectSettings({ project, workspaceId, opened, onClose, onChang
   const save = async () => {
     try {
       if (project) {
-        await api.updateProject(project.id, { name: name.trim(), defaultRole: roleValue(defaultRole) });
+        await api.updateProject(project.id, { name: name.trim(), defaultRole: roleValue(defaultRole), readOnly });
         onChanged();
       } else {
-        onChanged(await api.createProject(workspaceId, name.trim(), roleValue(defaultRole)));
+        onChanged(await api.createProject(workspaceId, name.trim(), roleValue(defaultRole), readOnly));
       }
       onClose();
     } catch (e) {
@@ -261,6 +265,12 @@ export function ProjectSettings({ project, workspaceId, opened, onClose, onChang
       <Stack>
         <TextInput label="Name" value={name} onChange={(e) => setName(e.currentTarget.value)} data-autofocus />
         <Select label="Who has access" value={defaultRole} onChange={(v) => v && setDefaultRole(v)} data={DEFAULT_ROLE_OPTIONS} allowDeselect={false} />
+        <Switch
+          label="Read only"
+          description="Everyone with access can read this project but not edit it, whatever their role below. Workspace owners and admins (and this project's admins) still can: good for a demo or reference project. Leave it off and any member with edit access can edit."
+          checked={readOnly}
+          onChange={(e) => setReadOnly(e.currentTarget.checked)}
+        />
         <Group justify="space-between">
           {project ? (
             <Button

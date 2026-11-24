@@ -3,7 +3,7 @@ import { requireUser, type User } from './auth.js';
 import type { Env } from './env.js';
 import { HttpError, json, newId, noContent } from './http.js';
 import { tellRoom } from './rooms.js';
-import { checkQuota, fileKey, requireStorage, storageById, WebDav, workspaceOfPage } from './storage.js';
+import { checkQuota, checkWorkspaceQuota, fileKey, maxFileBytes, requireStorage, storageById, WebDav, workspaceOfPage, pastStorageLimit } from './storage.js';
 
 /**
  * Files belong to a workspace. `page_id` is only where one was uploaded from; which pages use a file is
@@ -71,9 +71,12 @@ export async function uploadFile(req: Request, env: Env, u: User | null, id: str
   // The size is needed up front to check the storage limit.
   const size = Number(req.headers.get('content-length'));
   if (!Number.isFinite(size) || size <= 0) throw new HttpError(411, 'uploads need a Content-Length');
+  const cap = await maxFileBytes(env);
+  if (cap && size > cap) throw new HttpError(413, `files on this server may weigh at most ${Math.max(1, Math.round(cap / 1048576))} MB`);
   const workspaceId = await workspaceOfPage(env, id);
   const storage = await requireStorage(env, user.id, workspaceId);
   await checkQuota(env, storage, user.id, workspaceId, size);
+  await checkWorkspaceQuota(env, workspaceId, size);
   const raw = decodeURIComponent(req.headers.get('x-filename') ?? 'file');
   const name = raw.replace(/[/\\\u0000-\u001f]+/g, '_').trim().slice(-120) || 'file';
   const mime = (req.headers.get('content-type') ?? 'application/octet-stream').split(';')[0]!.trim() || 'application/octet-stream';
@@ -88,6 +91,13 @@ export async function uploadFile(req: Request, env: Env, u: User | null, id: str
     // The page it was uploaded into is about to use it.
     env.DB.prepare('INSERT INTO file_refs (file_id, page_id) VALUES (?, ?)').bind(fileId, id),
   ]);
+  // The check above and the write are not one step, so several uploads at once could each fit and together not.
+  // Look again now that this one is counted; if the workspace is over its limit, take this one back out.
+  if (await pastStorageLimit(env, workspaceId, 'file', fileId)) {
+    await env.DB.prepare('DELETE FROM files WHERE id = ?').bind(fileId).run();
+    await new WebDav(storage).delete(key).catch(() => undefined);
+    throw new HttpError(413, "this workspace's storage limit is reached");
+  }
   await tellRoom(env, id, '/notify', { type: 'files' });
   return json(publicFile(row), 201);
 }

@@ -43,17 +43,19 @@ export async function requireWorkspace(
 export async function projectRole(env: Env, user: User | null, projectId: string): Promise<Role | null> {
   if (!user) return null;
   const row = await env.DB.prepare(
-    `SELECT p.default_role, wm.role AS ws_role, pm.role AS project_role
+    `SELECT p.default_role, p.read_only, wm.role AS ws_role, pm.role AS project_role
      FROM projects p
      JOIN workspace_members wm ON wm.workspace_id = p.workspace_id AND wm.user_id = ?
      LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?
      WHERE p.id = ?`
   )
     .bind(user.id, user.id, projectId)
-    .first<{ default_role: Role | null; ws_role: WorkspaceRole; project_role: Role | null }>();
+    .first<{ default_role: Role | null; read_only: number; ws_role: WorkspaceRole; project_role: Role | null }>();
   if (!row) return null;
   if (row.ws_role === 'owner' || row.ws_role === 'admin') return 'admin';
-  return higher(row.project_role, row.default_role);
+  const role = higher(row.project_role, row.default_role);
+  // A read-only project (a demo, say): everyone but its administrators reads it.
+  return row.read_only && role !== null && role !== 'admin' ? 'viewer' : role;
 }
 
 export async function requireProject(env: Env, user: User | null, projectId: string, needed: Role): Promise<Role> {
@@ -131,18 +133,19 @@ export async function requirePage(
 export async function visibleProjects(env: Env, user: User, wid: string) {
   const wsRole = await requireWorkspace(env, user, wid);
   const { results } = await env.DB.prepare(
-    `SELECT p.id, p.name, p.default_role, pm.role AS member_role
+    `SELECT p.id, p.name, p.default_role, p.read_only, pm.role AS member_role
      FROM projects p LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?
      WHERE p.workspace_id = ? ORDER BY p.created_at`
   )
     .bind(user.id, wid)
-    .all<{ id: string; name: string; default_role: Role | null; member_role: Role | null }>();
+    .all<{ id: string; name: string; default_role: Role | null; read_only: number; member_role: Role | null }>();
   const rank = (r: Role | null) => (r ? ['viewer', 'commenter', 'editor', 'admin'].indexOf(r) : -1);
   return results
     .map((p) => {
-      const role: Role | null =
+      let role: Role | null =
         wsRole === 'member' ? (rank(p.member_role) >= rank(p.default_role) ? p.member_role : p.default_role) : 'admin';
-      return { id: p.id, name: p.name, defaultRole: p.default_role, role };
+      if (p.read_only && role !== null && role !== 'admin') role = 'viewer';
+      return { id: p.id, name: p.name, defaultRole: p.default_role, readOnly: !!p.read_only, role };
     })
     .filter((p) => p.role !== null);
 }

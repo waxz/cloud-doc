@@ -9,6 +9,7 @@ import * as files from './files.js';
 import * as pages from './pages.js';
 import * as settings from './settings.js';
 import { useStorageKey } from './secret.js';
+import { checkRate } from './ratelimit.js';
 import { adminStats, flushUsage, recordUsage } from './usage.js';
 import { NAME_HEADER, ROLE_HEADER } from './page-room.js';
 import * as ws from './workspaces.js';
@@ -77,6 +78,8 @@ route('POST', '/api/workspaces/:w/migrate', (r, e, u, [w]) => backup.migrateStep
 route('POST', '/api/workspaces/:w/backup', (r, e, u, [w]) => backup.backupStep(r, e, u, w!));
 route('GET', '/api/storages/:s/backups', (r, e, u, [s]) => backup.listBackups(e, u, s!));
 route('POST', '/api/import', (r, e, u) => backup.importStep(r, e, u));
+route('GET', '/api/workspaces/:w/usage', (r, e, u, [w]) => ws.getWorkspaceUsage(e, u, w!));
+route('PUT', '/api/workspaces/:w/limits', (r, e, u, [w]) => ws.setWorkspaceLimits(r, e, u, w!));
 route('GET', '/api/workspaces/:w/projects', (r, e, u, [w]) => ws.listProjects(e, u, w!));
 route('GET', '/api/workspaces/:w/tree', (r, e, u, [w]) => ws.listWorkspacePages(e, u, w!));
 route('POST', '/api/workspaces/:w/projects', (r, e, u, [w]) => ws.createProject(r, e, u, w!));
@@ -99,6 +102,9 @@ route('GET', '/api/pages/:id/files', (r, e, u, [id]) => files.listFiles(r, e, u,
 route('GET', '/api/files/:f/:name', (r, e, u, [f]) => files.downloadFile(r, e, u, f!));
 route('DELETE', '/api/files/:f', (r, e, u, [f]) => files.deleteFile(r, e, u, f!));
 route('GET', '/api/pages/:id/snapshot', (r, e, u, [id]) => pages.pageSnapshot(r, e, u, id!));
+route('GET', '/api/pages/:id/history-usage', (r, e, u, [id]) => pages.historyUsage(r, e, u, id!));
+route('DELETE', '/api/pages/:id/versions', (r, e, u, [id]) => pages.clearHistory(r, e, u, id!));
+route('DELETE', '/api/pages/:id/versions/:v', (r, e, u, [id, v]) => pages.deleteVersion(r, e, u, id!, v!));
 route('GET', '/api/pages/:id/versions', (r, e, u, [id]) => pages.listVersions(r, e, u, id!));
 route('POST', '/api/pages/:id/versions', (r, e, u, [id]) => pages.saveVersion(r, e, u, id!));
 route('GET', '/api/pages/:id/versions/:v/content', (r, e, u, [id, v]) => pages.versionContent(r, e, u, id!, v!));
@@ -168,7 +174,9 @@ export default {
       useStorageKey(env.STORAGE_KEY);
       await ensureSchema(env.DB);
       user = await currentUser(req, env);
-      if (p.startsWith('/parties/')) res = await sync(req, env, user);
+      const rate = p.startsWith('/api/') || p.startsWith('/parties/') ? await checkRate(env, user, req) : null;
+      if (rate && !rate.ok) res = json({ error: rate.message }, 429, { 'retry-after': String(rate.retryAfter) });
+      else if (p.startsWith('/parties/')) res = await sync(req, env, user);
       else {
         res = json({ error: 'not found' }, 404);
         for (const [method, re, handler] of routes) {

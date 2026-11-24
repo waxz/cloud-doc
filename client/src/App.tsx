@@ -13,7 +13,7 @@ export function App() {
   const [me, setMe] = useState<Me | null | undefined>(undefined);
   /** Whether this is a fresh install (no accounts yet), asked when signed out. */
   const [setup, setSetup] = useState<boolean | undefined>(undefined);
-  const [contact, setContact] = useState({ adminEmail: '', recovery: false });
+  const [contact, setContact] = useState({ adminEmail: '', recovery: false, openSignup: false });
   // Set when the very first requests fail, so the page says so (with a Retry) instead of spinning for ever.
   const [unreachable, setUnreachable] = useState('');
   const [signingIn, setSigningIn] = useState(false);
@@ -33,7 +33,7 @@ export function App() {
     loadMe();
   }, [loadMe]);
   useEffect(() => {
-    if (me === null) api.authStatus().then((s) => (setUnreachable(''), setSetup(s.setup), setContact({ adminEmail: s.adminEmail, recovery: s.recovery })), (e) => setUnreachable(errorText(e)));
+    if (me === null) api.authStatus().then((s) => (setUnreachable(''), setSetup(s.setup), setContact({ adminEmail: s.adminEmail, recovery: s.recovery, openSignup: s.openSignup })), (e) => setUnreachable(errorText(e)));
   }, [me]);
   // A registration link opened while signed in: nothing to do there.
   useEffect(() => {
@@ -67,7 +67,7 @@ export function App() {
   const retry = () => {
     setUnreachable('');
     void loadMe();
-    if (me === null) api.authStatus().then((s) => (setSetup(s.setup), setContact({ adminEmail: s.adminEmail, recovery: s.recovery })), (e) => setUnreachable(errorText(e)));
+    if (me === null) api.authStatus().then((s) => (setSetup(s.setup), setContact({ adminEmail: s.adminEmail, recovery: s.recovery, openSignup: s.openSignup })), (e) => setUnreachable(errorText(e)));
   };
   if (unreachable && (me === undefined || (me === null && setup === undefined))) {
     return (
@@ -112,6 +112,7 @@ export function App() {
           mode={mode}
           adminEmail={contact.adminEmail}
           recovery={contact.recovery}
+          openSignup={contact.openSignup}
           note={signingIn ? 'Sign in to use this link.' : undefined}
           onAuthed={(m) => {
             setMe(m);

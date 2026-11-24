@@ -20,6 +20,7 @@ import { useDisclosure, useMediaQuery } from '@mantine/hooks';
 import {
   IconChevronDown,
   IconChevronRight,
+  IconLock,
   IconLogout,
   IconMoon,
   IconLayoutSidebarLeftCollapse,
@@ -423,6 +424,11 @@ export function Shell({ me, workspace, pageId, commentId, dark, onMeChanged, onS
                     <Text size="xs" fw={600} c="dimmed" tt="uppercase" truncate="end">
                       {project.name}
                     </Text>
+                    {project.readOnly && (
+                      <Tooltip label="Read only">
+                        <IconLock size={12} aria-label="Read only" style={{ flex: 'none', opacity: 0.6 }} />
+                      </Tooltip>
+                    )}
                     {collapsed[project.id] && <Text size="xs" c="dimmed">({(pages[project.id] ?? []).length})</Text>}
                   </UnstyledButton>
                   <Group gap={0} wrap="nowrap" className="project-actions">

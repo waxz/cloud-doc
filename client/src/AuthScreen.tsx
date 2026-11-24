@@ -10,6 +10,8 @@ interface Props {
   mode: Mode;
   /** The admin's contact address, shown for people who forgot their password. */
   adminEmail?: string;
+  /** Open registration is on: anyone may create an account (a limited playground). */
+  openSignup?: boolean;
   /** Whether the Worker has a RECOVERY_SECRET, which switches on the admin recovery form. */
   recovery?: boolean;
   note?: string;
@@ -20,8 +22,9 @@ interface Props {
  * Sign in; or, on a fresh install, create the first account (the admin);
  * or create an account from an admin's registration link.
  */
-export function AuthScreen({ mode, adminEmail, recovery, note, onAuthed }: Props) {
+export function AuthScreen({ mode, adminEmail, recovery, openSignup, note, onAuthed }: Props) {
   const [recovering, setRecovering] = useState(false);
+  const [joining, setJoining] = useState(false);
   const [secret, setSecret] = useState('');
   const [email, setEmail] = useState('');
   const [lockedEmail, setLockedEmail] = useState(false);
@@ -31,7 +34,7 @@ export function AuthScreen({ mode, adminEmail, recovery, note, onAuthed }: Props
   const [busy, setBusy] = useState(false);
   const [joins, setJoins] = useState('');
   const [linkState, setLinkState] = useState<'loading' | 'ok' | string>(mode.kind === 'register' ? 'loading' : 'ok');
-  const creating = mode.kind !== 'signin';
+  const creating = mode.kind !== 'signin' || joining;
   const token = mode.kind === 'register' ? mode.token : undefined;
 
   useEffect(() => {
@@ -59,7 +62,7 @@ export function AuthScreen({ mode, adminEmail, recovery, note, onAuthed }: Props
     }
   };
 
-  const heading = recovering ? 'Admin recovery' : mode.kind === 'setup' ? 'Set up Cloud Doc' : mode.kind === 'register' ? 'Create your account' : 'Sign in';
+  const heading = recovering ? 'Admin recovery' : joining ? 'Join the playground' : mode.kind === 'setup' ? 'Set up Cloud Doc' : mode.kind === 'register' ? 'Create your account' : 'Sign in';
 
   return (
     <div className="auth">
@@ -127,10 +130,27 @@ export function AuthScreen({ mode, adminEmail, recovery, note, onAuthed }: Props
               <Button type="submit" loading={busy} fullWidth mt="xs">
                 {recovering ? 'Reset password and sign in' : creating ? 'Create account' : 'Sign in'}
               </Button>
-              {mode.kind === 'signin' && !recovering && (
+              {mode.kind === 'signin' && joining && (
+                <Text size="sm" ta="center">
+                  <Anchor component="button" type="button" onClick={() => setJoining(false)}>
+                    Back to sign in
+                  </Anchor>
+                </Text>
+              )}
+              {mode.kind === 'signin' && !recovering && !joining && (
                 <Stack gap={2}>
                   <Text size="sm" c="dimmed" ta="center">
-                    New here? Ask an admin for a registration link.
+                    {openSignup ? (
+                      <>
+                        New here?{' '}
+                        <Anchor component="button" type="button" onClick={() => setJoining(true)}>
+                          Create an account
+                        </Anchor>{' '}
+                        to try the playground.
+                      </>
+                    ) : (
+                      'New here? Ask an admin for a registration link.'
+                    )}
                   </Text>
                   <Text size="sm" c="dimmed" ta="center">
                     Forgot your password?{' '}

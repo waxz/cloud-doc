@@ -32,6 +32,8 @@ export interface Project {
   id: string;
   name: string;
   defaultRole: Role | null;
+  /** Members can read it but not edit it (workspace and project admins still can). */
+  readOnly?: boolean;
   role: Role;
 }
 export interface Page {
@@ -90,6 +92,33 @@ export interface WorkspaceFile extends FileInfo {
 export interface DeletePreview {
   pages: number;
   files: (FileInfo & { shared: boolean; used_elsewhere: { id: string; title: string }[]; can_delete: boolean })[];
+}
+export interface InstanceSettings {
+  adminEmail: string;
+  recoveryEnabled: boolean;
+  /** Limits every new workspace starts with (null = none). */
+  defaultStorageLimit: number | null;
+  defaultMaxPages: number | null;
+  /** The most one uploaded file may weigh on this instance. */
+  maxFileBytes: number | null;
+  /** Requests one person may make per minute (default 600) and per hour; 0 = no limit. */
+  ratePerMinute: number;
+  ratePerHour: number;
+  /** Open registration for a playground: new accounts join this workspace as members. */
+  openRegistration: boolean;
+  playgroundWorkspace: string | null;
+  playgroundMaxUsers: number | null;
+  accounts: number;
+}
+export interface WorkspaceUsage {
+  files: number;
+  history: number;
+  bytes: number;
+  fileCount: number;
+  pages: number;
+  storageLimit: number | null;
+  maxPages: number | null;
+  maxFileBytes: number | null;
 }
 export interface StorageInput {
   name?: string;
@@ -345,10 +374,25 @@ const afterWrite = <T>(prefix: string, promise: Promise<T>) =>
 
 export const api = {
   me: () => call<Me>('GET', '/api/me'),
-  authStatus: () => call<{ setup: boolean; adminEmail: string; recovery: boolean }>('GET', '/api/auth/status'),
+  authStatus: () => call<{ setup: boolean; adminEmail: string; recovery: boolean; openSignup: boolean }>('GET', '/api/auth/status'),
   recover: (secret: string, email: string, newPassword: string) => afterWrite('', call<Me>('POST', '/api/auth/recover', { secret, email, newPassword })),
-  adminSettings: () => call<{ adminEmail: string; recoveryEnabled: boolean }>('GET', '/api/admin/settings'),
-  setAdminSettings: (patch: { adminEmail?: string }) => call<{ adminEmail: string; recoveryEnabled: boolean }>('PUT', '/api/admin/settings', patch),
+  adminSettings: () => call<InstanceSettings>('GET', '/api/admin/settings'),
+  setAdminSettings: (
+    patch: Partial<{
+      adminEmail: string;
+      defaultStorageLimit: number | null;
+      defaultMaxPages: number | null;
+      maxFileBytes: number | null;
+      ratePerMinute: number | null;
+      ratePerHour: number | null;
+      openRegistration: boolean;
+      playgroundWorkspace: string | null;
+      playgroundMaxUsers: number | null;
+    }>
+  ) => call<InstanceSettings>('PUT', '/api/admin/settings', patch),
+  workspaceUsage: (wid: string) => call<WorkspaceUsage>('GET', `/api/workspaces/${wid}/usage`),
+  setWorkspaceLimits: (wid: string, limits: { storageLimit?: number | null; maxPages?: number | null }) =>
+    call<{ storageLimit: number | null; maxPages: number | null }>('PUT', `/api/workspaces/${wid}/limits`, limits),
   registration: (token: string) => call<{ email: string | null; workspace: string | null; storage: string | null }>('GET', `/api/register/${enc(token)}`),
   signup: (email: string, name: string, password: string, token?: string) =>
     afterWrite('', call<Me>('POST', '/api/auth/signup', { email, name, password, token })),
@@ -374,9 +418,9 @@ export const api = {
 
   tree: (wid: string) => call<{ projects: Project[]; pages: Record<string, Page[]>; members: number }>('GET', `/api/workspaces/${wid}/tree`),
   projects: (wid: string) => call<Project[]>('GET', `/api/workspaces/${wid}/projects`),
-  createProject: (wid: string, name: string, defaultRole: Role | null) =>
-    call<Project>('POST', `/api/workspaces/${wid}/projects`, { name, defaultRole }),
-  updateProject: (pid: string, patch: { name?: string; defaultRole?: Role | null }) => call<void>('PATCH', `/api/projects/${pid}`, patch),
+  createProject: (wid: string, name: string, defaultRole: Role | null, readOnly = false) =>
+    call<Project>('POST', `/api/workspaces/${wid}/projects`, { name, defaultRole, readOnly }),
+  updateProject: (pid: string, patch: { name?: string; defaultRole?: Role | null; readOnly?: boolean }) => call<void>('PATCH', `/api/projects/${pid}`, patch),
   deleteProject: (pid: string) => call<void>('DELETE', `/api/projects/${pid}`),
   projectMembers: (pid: string) => call<ProjectMember[]>('GET', `/api/projects/${pid}/members`),
   setProjectMember: (pid: string, uid: string, role: Role | null) => call<void>('PUT', `/api/projects/${pid}/members/${uid}`, { role }),
@@ -397,6 +441,11 @@ export const api = {
     return new Uint8Array(await res.arrayBuffer());
   },
   versions: (id: string) => call<Version[]>('GET', `/api/pages/${id}/versions`),
+  historyUsage: (id: string) =>
+    call<{ versions: number; bytes: number; autoVersions: number; autoBytes: number; workspaceBytes: number; storageLimit: number | null }>('GET', `/api/pages/${id}/history-usage`),
+  /** Removes history in steps of a few versions; call again while `remaining` is above zero. */
+  clearHistory: (id: string, scope: 'auto' | 'all') => call<{ deleted: number; freed: number; remaining: number }>('DELETE', `/api/pages/${id}/versions?scope=${scope}`),
+  deleteVersion: (id: string, vid: string) => call<void>('DELETE', `/api/pages/${id}/versions/${vid}`),
   saveVersion: (id: string) => call<Version>('POST', `/api/pages/${id}/versions`),
   async versionContent(id: string, vid: string): Promise<Uint8Array> {
     const res = await fetch(`/api/pages/${id}/versions/${vid}/content`);

@@ -324,6 +324,44 @@ const opened = []; // pages, for a screenshot of each when something fails
   await alice.getByRole('button', { name: 'Exit search' }).click();
   console.log('✓ explorer: projects fold, title search is local, workspace buttons on top, theme switch in the header');
 
+  // --- workspace settings: usage and limits (the instance admin sets them) ---
+  await alice.getByRole('button', { name: 'Workspace settings' }).click();
+  await alice.getByText('Storage and limits').waitFor();
+  await alice.getByLabel('Storage limit (MB)').fill('1');
+  await alice.getByLabel('Page limit').fill('50');
+  await btn(alice, 'Save limits').click();
+  await alice.getByText('Saved.').waitFor();
+  await alice.getByText(/of 1\.0 MB/).waitFor();
+  await alice.getByText(/of 50 allowed/).waitFor();
+  await alice.getByLabel('Storage limit (MB)').fill('');
+  await alice.getByLabel('Page limit').fill('');
+  await btn(alice, 'Save limits').click();
+  await alice.getByText(/used, no limit/).waitFor();
+  await alice.keyboard.press('Escape');
+  // and the playground defaults live in the admin panel
+  await userMenu(alice, 'Admin');
+  await alice.getByRole('tab', { name: 'Settings' }).click();
+  await alice.getByText('Limits for a playground').waitFor();
+  await alice.getByLabel('Largest single file (MB)').fill('25');
+  await btn(alice, 'Save limits').click();
+  await alice.getByText('Saved.').waitFor();
+  await alice.getByLabel('Largest single file (MB)').fill('');
+  await btn(alice, 'Save limits').click();
+  await alice.keyboard.press('Escape');
+  console.log('✓ limits: usage and limits in workspace settings, playground defaults in the admin panel');
+
+  // --- project settings: read only or editable ---
+  await alice.getByRole('button', { name: 'Settings for General' }).click();
+  await alice.getByRole('dialog').getByText('Project settings').waitFor();
+  await alice.getByRole('switch', { name: /Read only/ }).check({ force: true });
+  await btn(alice, 'Save').click();
+  await nav(alice).locator('svg[aria-label="Read only"]').waitFor();
+  await alice.getByRole('button', { name: 'Settings for General' }).click();
+  await alice.getByRole('switch', { name: /Read only/ }).uncheck({ force: true });
+  await btn(alice, 'Save').click();
+  await nav(alice).locator('svg[aria-label="Read only"]').waitFor({ state: 'detached' });
+  console.log('✓ project settings: read-only switch, with a lock in the sidebar');
+
   // --- columns: drag a block beside another, resize them, stack them again; a reader sees it live ---
   await alice.locator('.bn-editor').getByText('Two engineers in Q2.').first().click();
   await alice.keyboard.press('End');
@@ -401,6 +439,17 @@ const opened = []; // pages, for a screenshot of each when something fails
   }
   console.log('✓ outline: a floating card; the page width never changes');
 
+  // --- history: what it takes up, and a way to clear it ---
+  await alice.getByRole('button', { name: 'History', exact: true }).click();
+  await alice.getByText("This page's history").waitFor();
+  await btn(alice, 'Save a version now').click();
+  await alice.getByText(/1 version \(/).waitFor();
+  alice.once('dialog', (d) => d.accept());
+  await btn(alice, 'Clear all history').click();
+  await alice.getByText('No versions yet.').waitFor();
+  await alice.getByRole('button', { name: 'Close panel' }).click();
+  console.log('✓ history panel: usage shown, cleared with one button');
+
   // --- phone ---
   const phone = await ctx('phone', { ...devices['iPhone 13'] });
   await phone.goto(B);
@@ -455,6 +504,38 @@ const opened = []; // pages, for a screenshot of each when something fails
   assert.match(alice.url(), /\/w\//);
   assert.ok((await alice.locator('.ws-switch').textContent()).includes('Second space'), 'and it opens the new workspace, not the old one');
   console.log('✓ a new workspace opens without an error');
+
+  // --- open registration for a playground: the admin's switch, then a newcomer signing up ---
+  await userMenu(alice, 'Admin');
+  await alice.getByRole('tab', { name: 'Settings' }).click();
+  await alice.getByRole('combobox', { name: 'Playground workspace' }).click();
+  await alice.getByRole('option').first().click();
+  await alice.locator('input[role="switch"]:not([disabled])').first().waitFor({ state: 'attached' }); // enabled once the workspace is saved
+  await alice.getByRole('switch', { name: /Open registration/ }).click({ force: true }); // it changes once the server has saved
+  await alice.getByText('Sign-up is open').waitFor();
+  await alice.keyboard.press('Escape');
+  const newcomer = await ctx('newcomer');
+  await newcomer.goto(B);
+  await newcomer.getByRole('button', { name: 'Create an account' }).click();
+  await newcomer.getByRole('heading', { name: 'Join the playground' }).waitFor();
+  await newcomer.getByLabel('Email').fill(`pat-${run}@example.com`);
+  await newcomer.getByLabel(/^Name/).fill('Pat');
+  await newcomer.getByRole('textbox', { name: 'Password' }).fill('correct horse battery');
+  await btn(newcomer, 'Create account').click();
+  await newcomer.locator('.ws-switch').waitFor();
+  await newcomer.locator('.ws-switch').click();
+  assert.equal(await newcomer.getByRole('menuitem', { name: 'New workspace' }).count(), 0, 'a playground account cannot make workspaces');
+  await newcomer.keyboard.press('Escape');
+  await userMenu(alice, 'Admin');
+  await alice.getByRole('tab', { name: 'Settings' }).click();
+  await alice.getByRole('switch', { name: /Open registration/ }).click({ force: true });
+  await alice.getByText('Sign-up is open').waitFor({ state: 'detached' });
+  await alice.keyboard.press('Escape');
+  const closed = await ctx('closed');
+  await closed.goto(B);
+  await closed.getByRole('heading', { name: 'Sign in' }).waitFor();
+  assert.equal(await closed.getByRole('button', { name: 'Create an account' }).count(), 0, 'closed again');
+  console.log('✓ open registration: switch in the admin panel, a newcomer joins as a member, closed again');
 
   // the sign-in page loads little code, and a server that doesn't answer shows a way to retry, not a spinner for ever
   const fresh = await ctx('fresh');
