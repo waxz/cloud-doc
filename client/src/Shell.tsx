@@ -35,9 +35,8 @@ import {
   IconX,
 } from '@tabler/icons-react';
 import { DeletePageDialog } from './DeletePageDialog';
-import { WorkspaceFiles } from './WorkspaceFiles';
 import { WorkspaceForm } from './WorkspaceForm';
-import { AdminPanel, Loading, OnceOpened, PageView, ProjectSettings, UserSettings, WorkspaceSettings } from './lazy';
+import { AdminPanel, Loading, OnceOpened, PageView, ProjectSettings, UserSettings, WorkspaceFiles, WorkspaceSettings } from './lazy';
 import { getFavorites, requestFind } from './util';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, atLeast, type DeletePreview, type Me, type Page, type Project, type SearchHit, type Workspace } from './api';
@@ -583,7 +582,7 @@ export function Shell({ me, workspace, pageId, commentId, dark, onMeChanged, onS
       />
       <OnceOpened open={!!userSettings}><UserSettings opened={!!userSettings} tab={userSettings ?? 'profile'} onClose={() => setUserSettings(null)} onChanged={onMeChanged} onError={onError} /></OnceOpened>
       {me.user.role === 'admin' && <OnceOpened open={admin}><AdminPanel me={me.user} opened={admin} onClose={() => setAdmin(false)} onError={onError} /></OnceOpened>}
-      <WorkspaceFiles workspaceId={wid} opened={filesOpen} onClose={() => setFilesOpen(false)} me={me.user} pageId={pageId ?? null} canInsert={!!pageId} onOpenPage={(id) => open(id)} onError={onError} />
+      <OnceOpened open={filesOpen}><WorkspaceFiles workspaceId={wid} opened={filesOpen} onClose={() => setFilesOpen(false)} me={me.user} pageId={pageId ?? null} canInsert={!!pageId} onOpenPage={(id) => open(id)} onError={onError} /></OnceOpened>
       <DeletePageDialog page={deleting?.page ?? null} preview={deleting?.preview ?? null} onCancel={() => setDeleting(null)} onConfirm={confirmDelete} />
     </AppShell>
   );

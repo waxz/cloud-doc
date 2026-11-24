@@ -2,9 +2,7 @@ import { ActionIcon, Anchor, Badge, Button, Group, Loader, Modal, SegmentedContr
 import { IconCopy, IconFile, IconFileTypePdf, IconMovie, IconMusic, IconPhoto, IconRowInsertBottom, IconSearch, IconTrash } from '@tabler/icons-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, type User, type WorkspaceFile } from './api';
-import { blockTypeFor } from './blocks';
-import { deleteFileAsking } from './FilesPanel';
-import { errorText, formatBytes, timeAgo } from './util';
+import { blockTypeFor, deleteFileAsking, errorText, formatBytes, timeAgo } from './util';
 
 const ICON = { image: IconPhoto, video: IconMovie, audio: IconMusic, pdf: IconFileTypePdf, file: IconFile };
 

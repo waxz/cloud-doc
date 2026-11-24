@@ -456,6 +456,24 @@ const opened = []; // pages, for a screenshot of each when something fails
   assert.ok((await alice.locator('.ws-switch').textContent()).includes('Second space'), 'and it opens the new workspace, not the old one');
   console.log('✓ a new workspace opens without an error');
 
+  // the sign-in page loads little code, and a server that doesn't answer shows a way to retry, not a spinner for ever
+  const fresh = await ctx('fresh');
+  let jsBytes = 0;
+  const pending = [];
+  fresh.on('response', (r) => { if (/\.js(\?|$)/.test(r.url())) pending.push(r.body().then((b) => (jsBytes += b.length), () => undefined)); });
+  await fresh.goto(B);
+  await fresh.getByRole('heading', { name: 'Sign in' }).waitFor();
+  await Promise.all(pending);
+  assert.ok(jsBytes < 700 * 1024, `the sign-in page loads under 700 KB of script (got ${Math.round(jsBytes / 1024)} KB): the editor, PDF and math code load later`);
+  const flaky = await ctx('flaky');
+  await flaky.route('**/api/me', (r) => r.abort());
+  await flaky.goto(B);
+  await flaky.getByText("Can't reach Cloud Doc").waitFor();
+  await flaky.unroute('**/api/me');
+  await flaky.getByRole('button', { name: 'Try again' }).click();
+  await flaky.getByRole('heading', { name: 'Sign in' }).waitFor();
+  console.log(`✓ sign-in page: ${Math.round(jsBytes / 1024)} KB of script; an unreachable server shows a retry`);
+
   // recovery mode last: it ends the admin's other sessions
   if (process.env.RECOVERY_SECRET) {
     await stranger.getByRole('button', { name: /use recovery mode/ }).click();

@@ -300,10 +300,15 @@ export class ApiError extends Error {
 export const TAB_ID = typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : String(Math.random()).slice(2);
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
+  // A request that hangs (a stalled connection, a Worker that never answers) must end in an error the page can show,
+  // not an endless spinner.
   const res = await fetch(path, {
     method,
     headers: { 'x-tab-id': TAB_ID, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
     body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(60_000),
+  }).catch((err: Error) => {
+    throw new ApiError(0, err.name === 'TimeoutError' ? 'the server took too long to answer: check your connection and try again' : `could not reach the server (${err.message})`);
   });
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string };

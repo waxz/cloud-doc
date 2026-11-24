@@ -728,11 +728,4 @@ export const schema = BlockNoteSchema.create({
 
 export type Schema = typeof schema;
 
-/** The block type for an uploaded file. */
-export function blockTypeFor(mime: string): 'image' | 'video' | 'audio' | 'pdf' | 'file' {
-  if (mime.startsWith('image/')) return 'image';
-  if (mime.startsWith('video/')) return 'video';
-  if (mime.startsWith('audio/')) return 'audio';
-  if (mime === 'application/pdf') return 'pdf';
-  return 'file';
-}
+export { blockTypeFor } from './util';
