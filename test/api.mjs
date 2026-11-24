@@ -721,6 +721,43 @@ console.log('✓ share links: public read, subpages, commenter for outsiders, re
   console.log('✓ export/import at scale: chunked steps, nesting, replies, history, links, missing file, safety');
 }
 
+// --- storage address: server URL + folder path, checked and created ---
+{
+  const form = { name: 'Split', baseUrl: dav.url, path: 'made/by/test', username: dav.user, password: dav.pass };
+  let r = await alice.ok('POST', '/api/storages/test', form);
+  assert.equal(r.ok, false);
+  assert.equal(r.missing, true, 'a missing folder is reported as such, not as an error');
+  assert.ok(![...dav.dirs].some((d) => d.includes('/made/')), 'testing alone creates nothing');
+  r = await alice.ok('POST', '/api/storages/test', { ...form, create: true });
+  assert.ok(r.ok && r.created, 'the folder is created on request');
+  assert.ok([...dav.dirs].some((d) => d.startsWith('/made/by/test')), 'every level exists');
+  r = await alice.ok('POST', '/api/storages/test', form);
+  assert.ok(r.ok && !r.created, 'now it is just connected');
+  assert.match((await alice.ok('POST', '/api/storages/test', { ...form, password: 'nope' })).message, /username or password/);
+  assert.match((await alice.ok('POST', '/api/storages/test', { ...form, baseUrl: `${dav.url}/no-such-server-root` })).message, /Server URL not found/);
+  // saving creates the folder too, and the address comes back split
+  const saved = await alice.ok('POST', '/api/users/me/storages', { ...form, path: 'saved/on/create' });
+  assert.ok([...dav.dirs].some((d) => d.startsWith('/saved/on/create')), 'saving makes the folder');
+  assert.equal(saved.baseUrl, dav.url);
+  assert.equal(saved.path, 'saved/on/create');
+  assert.equal(saved.url, `${dav.url}/saved/on/create`);
+  await alice.expect(400, 'POST', '/api/users/me/storages', { ...form, path: '../escape' });
+  await alice.expect(400, 'POST', '/api/users/me/storages', { ...form, password: 'wrong', path: 'x/y' });
+  // editing the folder moves the address; the old whole-URL form still works
+  const moved = await alice.ok('PATCH', `/api/storages/${saved.id}`, { path: 'saved/elsewhere' });
+  assert.equal(moved.path, 'saved/elsewhere');
+  assert.ok([...dav.dirs].some((d) => d.startsWith('/saved/elsewhere')));
+  const legacy = await alice.ok('POST', '/api/users/me/storages', { name: 'Whole', url: `${dav.url}/alice`, username: dav.user, password: dav.pass });
+  assert.equal(legacy.path, '');
+  assert.ok((await alice.ok('POST', `/api/storages/${legacy.id}/test`, {})).ok);
+  // the admin's shared storages use the same address handling
+  const sh = await alice.ok('POST', '/api/admin/shared-storages', { name: 'Shared split', baseUrl: dav.url, path: 'shared/made', username: dav.user, password: dav.pass });
+  assert.ok([...dav.dirs].some((d) => d.startsWith('/shared/made')));
+  await alice.ok('DELETE', `/api/admin/shared-storages/${sh.id}`);
+  for (const id of [saved.id, legacy.id]) await alice.ok('DELETE', `/api/storages/${id}`);
+  console.log('✓ storage address: server URL + folder, checked, created on test or save');
+}
+
 a.close();
 dav.close();
 console.log('\nAll API checks passed');

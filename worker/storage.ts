@@ -12,6 +12,8 @@ export interface StorageRow {
   password: string;
   /** 1 for a storage the admin shares with chosen users. */
   shared?: number;
+  /** The folder part of `url` ('' when the address was saved as one piece). */
+  root_path?: string;
 }
 
 /** Everything the app keeps in a storage lives under this folder. */
@@ -85,6 +87,19 @@ export class WebDav {
     if (!res.ok && res.status !== 404) throw new HttpError(502, `storage delete failed (${res.status})`);
   }
 
+  /** HTTP status of a PROPFIND on `key` (0 = unreachable is thrown as 502 by request). */
+  async propfind(key = ''): Promise<number> {
+    return (await this.request('PROPFIND', key, { headers: { depth: '0' } })).status;
+  }
+
+  /** Creates `segments` one level at a time below this storage's URL; folders that exist are fine. */
+  async makeFolders(segments: string[]): Promise<void> {
+    for (let i = 1; i <= segments.length; i++) {
+      const res = await this.request('MKCOL', `${segments.slice(0, i).join('/')}/`);
+      if (!res.ok && res.status !== 405) throw new HttpError(502, `the server refused to create the folder "${segments.slice(0, i).join('/')}" (${res.status})`);
+    }
+  }
+
   /** Names of the folders directly inside `key` (empty when it doesn't exist). */
   async listFolders(key: string): Promise<string[]> {
     const res = await this.request('PROPFIND', key, { headers: { depth: '1' } });
@@ -119,7 +134,7 @@ export class WebDav {
 
 export async function storageById(env: Env, id: string | null): Promise<StorageRow | null> {
   if (!id) return null;
-  return env.DB.prepare('SELECT id, user_id, name, url, username, password, shared FROM storages WHERE id = ?').bind(id).first<StorageRow>();
+  return env.DB.prepare('SELECT id, user_id, name, url, username, password, shared, root_path FROM storages WHERE id = ?').bind(id).first<StorageRow>();
 }
 
 /** The storage a user writes to in a workspace: a bound personal override,
@@ -239,5 +254,68 @@ export async function deleteWorkspaceData(env: Env, workspaceId: string): Promis
     .all<StorageRow>();
   for (const s of results) {
     await new WebDav(s).delete(workspaceFolder(workspaceId)).catch((err) => console.error('storage cleanup failed', err));
+  }
+}
+
+// ---------- address: server URL + folder path ----------
+
+/** A folder path as clean segments: no empty, `.` or `..` parts, no control characters or backslashes. */
+export function cleanPath(v: unknown): string[] {
+  const raw = typeof v === 'string' ? v : '';
+  if (raw.length > 300) throw new HttpError(400, 'the folder path is too long');
+  const parts = raw.split('/').map((p) => p.trim()).filter(Boolean);
+  for (const p of parts) {
+    if (p === '.' || p === '..' || /[\\\u0000-\u001f]/.test(p)) throw new HttpError(400, 'the folder path can only use plain folder names');
+  }
+  return parts;
+}
+
+const encodePath = (parts: string[]) => parts.map(encodeURIComponent).join('/');
+
+/** The full address of a folder: the server URL (no trailing slash) plus its path. */
+export const joinUrl = (base: string, parts: string[]) => (parts.length ? `${base.replace(/\/+$/, '')}/${encodePath(parts)}` : base.replace(/\/+$/, ''));
+
+/** Splits a saved full URL back into server URL and path, using the stored `root_path`. */
+export function splitUrl(url: string, rootPath: string): { baseUrl: string; path: string } {
+  const parts = rootPath.split('/').filter(Boolean);
+  const suffix = parts.length ? `/${encodePath(parts)}` : '';
+  if (suffix && url.endsWith(suffix)) return { baseUrl: url.slice(0, url.length - suffix.length), path: parts.join('/') };
+  return { baseUrl: url, path: '' };
+}
+
+export interface ProbeResult {
+  ok: boolean;
+  message: string;
+  /** The server answered but the folder doesn't exist yet (and wasn't asked to be created). */
+  missing?: boolean;
+  created?: boolean;
+}
+
+/**
+ * Checks a storage in two steps so the message says which part is wrong: the server (address and login), then
+ * the folder under it. With `create`, a missing folder is made (each level in turn).
+ */
+export async function probeStorage(
+  s: Pick<StorageRow, 'id' | 'url' | 'username' | 'password'>,
+  rootPath: string,
+  create: boolean
+): Promise<ProbeResult> {
+  const parts = rootPath.split('/').filter(Boolean);
+  const { baseUrl } = splitUrl(s.url, rootPath);
+  const server = new WebDav({ ...s, url: baseUrl });
+  try {
+    const status = await server.propfind('');
+    if (status === 401 || status === 403) return { ok: false, message: 'Wrong username or password' };
+    if (status === 404) return { ok: false, message: parts.length ? 'Server URL not found: check the address' : 'Folder not found' };
+    if (status !== 207 && !(status >= 200 && status < 300)) return { ok: false, message: `Unexpected answer from the server (${status})` };
+    if (!parts.length) return { ok: true, message: 'Connected' };
+    const folder = await new WebDav(s).propfind('');
+    if (folder === 207 || (folder >= 200 && folder < 300)) return { ok: true, message: 'Connected' };
+    if (folder !== 404) return { ok: false, message: `Unexpected answer for the folder (${folder})` };
+    if (!create) return { ok: false, missing: true, message: `The folder "${parts.join('/')}" doesn't exist yet` };
+    await server.makeFolders(parts);
+    return { ok: true, created: true, message: `Connected; created the folder "${parts.join('/')}"` };
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : String(err) };
   }
 }

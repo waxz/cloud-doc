@@ -2,7 +2,7 @@ import { sealPassword } from './secret.js';
 import { hashPassword, requireAdmin, requireUser, type User, verifyPassword } from './auth.js';
 import type { Env } from './env.js';
 import { HttpError, json, newId, noContent, randomToken, readJson, str } from './http.js';
-import { sharedUsage, storageById, usage, WebDav } from './storage.js';
+import { cleanPath, joinUrl, probeStorage, sharedUsage, splitUrl, storageById, usage, WebDav } from './storage.js';
 
 // ---------- storages ----------
 // A user manages only their own storages. The admin shares storages of their own with chosen users, each
@@ -45,41 +45,69 @@ function cleanUrl(v: unknown): string {
 }
 
 /** What clients see: never the password. */
-const publicStorage = (s: { id: string; name: string; url: string; username: string; password: string }) => ({
+const publicStorage = (s: { id: string; name: string; url: string; username: string; password: string; root_path?: string }) => ({
   id: s.id,
   name: s.name,
   url: s.url,
+  ...splitUrl(s.url, s.root_path ?? ''),
   username: s.username,
   hasPassword: !!s.password,
 });
 
 export async function listStorages(env: Env, user: User | null, uid: string): Promise<Response> {
   const owner = ownerOnly(user, uid);
-  const { results } = await env.DB.prepare('SELECT id, name, url, username, password FROM storages WHERE user_id = ? AND shared = 0 ORDER BY created_at')
+  const { results } = await env.DB.prepare('SELECT id, name, url, username, password, root_path FROM storages WHERE user_id = ? AND shared = 0 ORDER BY created_at')
     .bind(owner)
-    .all<{ id: string; name: string; url: string; username: string; password: string }>();
+    .all<{ id: string; name: string; url: string; username: string; password: string; root_path: string }>();
   return json(results.map(publicStorage));
 }
 
 interface StorageInput {
   name?: string;
+  /** The whole address as one piece (older clients); `baseUrl` + `path` is the way to also have the folder created. */
   url?: string;
+  baseUrl?: string;
+  path?: string;
+  /** With a test: make the folder if it doesn't exist. */
+  create?: boolean;
   username?: string;
   password?: string;
+}
+
+/** Where a storage points: server URL + folder path (or one whole URL), falling back to what's saved. */
+function addressOf(b: StorageInput, saved?: { url: string; root_path?: string }): { url: string; rootPath: string; split: boolean } {
+  if (b.baseUrl !== undefined || b.path !== undefined) {
+    const cur = saved ? splitUrl(saved.url, saved.root_path ?? '') : { baseUrl: '', path: '' };
+    const parts = cleanPath(b.path ?? cur.path);
+    return { url: joinUrl(cleanUrl(b.baseUrl ?? cur.baseUrl), parts), rootPath: parts.join('/'), split: true };
+  }
+  if (b.url !== undefined) return { url: cleanUrl(b.url), rootPath: '', split: false };
+  if (saved) return { url: saved.url, rootPath: saved.root_path ?? '', split: false };
+  return { url: cleanUrl(undefined), rootPath: '', split: false };
+}
+
+/** Before saving an address that has a folder path: the server must answer and the folder is created if missing. */
+async function prepareFolder(a: { url: string; rootPath: string; split: boolean }, username: string, password: string): Promise<void> {
+  if (!a.split || !a.rootPath) return;
+  const r = await probeStorage({ id: 'new', url: a.url, username, password }, a.rootPath, true);
+  if (!r.ok) throw new HttpError(400, `can't use this storage: ${r.message}`);
 }
 
 export async function createStorage(req: Request, env: Env, user: User | null, uid: string): Promise<Response> {
   const owner = ownerOnly(user, uid);
   const b = await readJson<StorageInput>(req);
+  const addr = addressOf(b);
   const row = {
     id: newId(),
     name: str(b.name, 'name', 80),
-    url: cleanUrl(b.url),
+    url: addr.url,
+    root_path: addr.rootPath,
     username: typeof b.username === 'string' ? b.username.trim() : '',
     password: typeof b.password === 'string' ? b.password : '',
   };
-  await env.DB.prepare('INSERT INTO storages (id, user_id, name, url, username, password, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .bind(row.id, owner, row.name, row.url, row.username, await sealPassword(row.password), Date.now())
+  await prepareFolder(addr, row.username, row.password);
+  await env.DB.prepare('INSERT INTO storages (id, user_id, name, url, root_path, username, password, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    .bind(row.id, owner, row.name, row.url, row.root_path, row.username, await sealPassword(row.password), Date.now())
     .run();
   // The first storage becomes the default, so uploads work right away.
   await env.DB.prepare('UPDATE users SET default_storage_id = ? WHERE id = ? AND default_storage_id IS NULL').bind(row.id, owner).run();
@@ -90,14 +118,17 @@ export async function createStorage(req: Request, env: Env, user: User | null, u
 export async function updateStorage(req: Request, env: Env, user: User | null, sid: string): Promise<Response> {
   const s = await ownedStorage(env, user, sid);
   const b = await readJson<StorageInput>(req);
+  const addr = addressOf(b, s);
   const next = {
     name: b.name !== undefined ? str(b.name, 'name', 80) : s.name,
-    url: b.url !== undefined ? cleanUrl(b.url) : s.url,
+    url: addr.url,
+    root_path: addr.rootPath,
     username: typeof b.username === 'string' ? b.username.trim() : s.username,
     password: typeof b.password === 'string' && b.password !== '' ? await sealPassword(b.password) : s.password,
   };
-  await env.DB.prepare('UPDATE storages SET name = ?, url = ?, username = ?, password = ? WHERE id = ?')
-    .bind(next.name, next.url, next.username, next.password, sid)
+  await prepareFolder(addr, next.username, typeof b.password === 'string' && b.password !== '' ? b.password : s.password);
+  await env.DB.prepare('UPDATE storages SET name = ?, url = ?, root_path = ?, username = ?, password = ? WHERE id = ?')
+    .bind(next.name, next.url, next.root_path, next.username, next.password, sid)
     .run();
   return json(publicStorage({ id: sid, ...next }));
 }
@@ -132,13 +163,14 @@ export async function testStorage(req: Request, env: Env, user: User | null, sid
   requireUser(user);
   const b = await readJson<StorageInput>(req);
   const saved = sid ? await ownedStorage(env, user, sid) : null;
+  const addr = addressOf(b, saved ?? undefined);
   const target = {
     id: saved?.id ?? 'test',
-    url: b.url !== undefined ? cleanUrl(b.url) : (saved?.url ?? cleanUrl(undefined)),
+    url: addr.url,
     username: typeof b.username === 'string' ? b.username.trim() : (saved?.username ?? ''),
     password: typeof b.password === 'string' && b.password !== '' ? b.password : (saved?.password ?? ''),
   };
-  return json(await new WebDav(target).check());
+  return json(await probeStorage(target, addr.rootPath, b.create === true));
 }
 
 async function requireOwnStorage(env: Env, owner: string, storageId: string): Promise<void> {
@@ -206,10 +238,10 @@ export async function getSettings(env: Env, user: User | null): Promise<Response
     });
   }
   const { results: storages } = await env.DB.prepare(
-    'SELECT id, name, url, username, password FROM storages WHERE user_id = ? AND shared = 0 ORDER BY created_at'
+    'SELECT id, name, url, username, password, root_path FROM storages WHERE user_id = ? AND shared = 0 ORDER BY created_at'
   )
     .bind(u.id)
-    .all<{ id: string; name: string; url: string; username: string; password: string }>();
+    .all<{ id: string; name: string; url: string; username: string; password: string; root_path: string }>();
   // Storages the admin allocated to this user: name, limit and use, never the address or credentials.
   const { results: grants } = await env.DB.prepare(
     `SELECT s.id, s.name, g.limit_bytes FROM storage_grants g JOIN storages s ON s.id = g.storage_id
@@ -419,8 +451,8 @@ function limitBytes(v: unknown): number | null {
 
 export async function adminListSharedStorages(env: Env, user: User | null): Promise<Response> {
   requireAdmin(user);
-  const { results } = await env.DB.prepare('SELECT id, name, url, username, password FROM storages WHERE shared = 1 ORDER BY created_at')
-    .all<{ id: string; name: string; url: string; username: string; password: string }>();
+  const { results } = await env.DB.prepare('SELECT id, name, url, username, password, root_path FROM storages WHERE shared = 1 ORDER BY created_at')
+    .all<{ id: string; name: string; url: string; username: string; password: string; root_path: string }>();
   const out = [];
   for (const s of results) {
     const { results: grants } = await env.DB.prepare(
@@ -437,15 +469,18 @@ export async function adminListSharedStorages(env: Env, user: User | null): Prom
 export async function adminCreateSharedStorage(req: Request, env: Env, user: User | null): Promise<Response> {
   const admin = requireAdmin(user);
   const b = await readJson<StorageInput>(req);
+  const addr = addressOf(b);
   const row = {
     id: newId(),
     name: str(b.name, 'name', 80),
-    url: cleanUrl(b.url),
+    url: addr.url,
+    root_path: addr.rootPath,
     username: typeof b.username === 'string' ? b.username.trim() : '',
     password: typeof b.password === 'string' ? b.password : '',
   };
-  await env.DB.prepare('INSERT INTO storages (id, user_id, name, url, username, password, shared, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?)')
-    .bind(row.id, admin.id, row.name, row.url, row.username, await sealPassword(row.password), Date.now())
+  await prepareFolder(addr, row.username, row.password);
+  await env.DB.prepare('INSERT INTO storages (id, user_id, name, url, root_path, username, password, shared, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)')
+    .bind(row.id, admin.id, row.name, row.url, row.root_path, row.username, await sealPassword(row.password), Date.now())
     .run();
   return json({ ...publicStorage(row), grants: [] }, 201);
 }
@@ -454,14 +489,17 @@ export async function adminUpdateSharedStorage(req: Request, env: Env, user: Use
   requireAdmin(user);
   const s = await sharedStorageOrThrow(env, sid);
   const b = await readJson<StorageInput>(req);
+  const addr = addressOf(b, s);
   const next = {
     name: b.name !== undefined ? str(b.name, 'name', 80) : s.name,
-    url: b.url !== undefined ? cleanUrl(b.url) : s.url,
+    url: addr.url,
+    root_path: addr.rootPath,
     username: typeof b.username === 'string' ? b.username.trim() : s.username,
     password: typeof b.password === 'string' && b.password !== '' ? await sealPassword(b.password) : s.password,
   };
-  await env.DB.prepare('UPDATE storages SET name = ?, url = ?, username = ?, password = ? WHERE id = ?')
-    .bind(next.name, next.url, next.username, next.password, sid)
+  await prepareFolder(addr, next.username, typeof b.password === 'string' && b.password !== '' ? b.password : s.password);
+  await env.DB.prepare('UPDATE storages SET name = ?, url = ?, root_path = ?, username = ?, password = ? WHERE id = ?')
+    .bind(next.name, next.url, next.root_path, next.username, next.password, sid)
     .run();
   return json(publicStorage({ id: sid, ...next }));
 }
@@ -477,13 +515,18 @@ export async function adminTestSharedStorage(req: Request, env: Env, user: User 
   requireAdmin(user);
   const saved = sid ? await sharedStorageOrThrow(env, sid) : null;
   const b = await readJson<StorageInput>(req);
+  const addr = addressOf(b, saved ?? undefined);
   return json(
-    await new WebDav({
-      id: saved?.id ?? 'test',
-      url: b.url !== undefined ? cleanUrl(b.url) : (saved?.url ?? cleanUrl(undefined)),
-      username: typeof b.username === 'string' ? b.username.trim() : (saved?.username ?? ''),
-      password: typeof b.password === 'string' && b.password !== '' ? b.password : (saved?.password ?? ''),
-    }).check()
+    await probeStorage(
+      {
+        id: saved?.id ?? 'test',
+        url: addr.url,
+        username: typeof b.username === 'string' ? b.username.trim() : (saved?.username ?? ''),
+        password: typeof b.password === 'string' && b.password !== '' ? b.password : (saved?.password ?? ''),
+      },
+      addr.rootPath,
+      b.create === true
+    )
   );
 }
 

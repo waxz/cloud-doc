@@ -14,6 +14,9 @@
 }
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
+/* iOS inflates text after rotating and widens the page for anything that sticks out: keep both in check. */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+body { overflow-x: clip; }
 body { background: var(--mantine-color-body); -webkit-tap-highlight-color: transparent; }
 
 /* ---- navigation ---- */
@@ -475,3 +478,25 @@ button.page-icon:hover { background: var(--hover); }
 .dthread-replies-body .comment-rich { font-size: 13px; }
 .thread-composer { margin-top: 8px; }
 .dnode-flat { display: grid; gap: 12px; }
+
+/* ---- touch screens (iPhone Safari) ----
+   Safari zooms into any field whose text is under 16px when it gets focus, and leaves the page zoomed
+   in. Touch fields are therefore 16px everywhere: inputs, the comment editors, the PDF page box. */
+@media (pointer: coarse) {
+  input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='file']),
+  textarea, select,
+  .mantine-Input-input, .mantine-Textarea-input, .mantine-Select-input, .mantine-MultiSelect-inputField,
+  .comment-editor .bn-editor, .comment-reply-editor .bn-editor,
+  .comment-editor .bn-inline-content, .comment-reply-editor .bn-inline-content,
+  .comment-editor [data-content-type="heading"] .bn-inline-content, .comment-reply-editor [data-content-type="heading"] .bn-inline-content,
+  .comment-editor .bn-editor [data-is-empty-and-focused]::before, .comment-reply-editor .bn-editor [data-is-empty-and-focused]::before,
+  .pdf-page-input { font-size: 16px !important; }
+  .pdf-page-input { width: 44px; height: 30px; }
+}
+
+/* The formatting toolbar is wider than a phone: keep it on screen and let it scroll sideways. */
+@media (max-width: 48em) {
+  .bn-formatting-toolbar, .bn-link-toolbar { max-width: calc(100vw - 16px); overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+  .bn-formatting-toolbar::-webkit-scrollbar, .bn-link-toolbar::-webkit-scrollbar { display: none; }
+  .bn-formatting-toolbar > *, .bn-link-toolbar > * { flex: none; }
+}
