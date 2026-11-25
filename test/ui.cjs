@@ -464,6 +464,17 @@ const opened = []; // pages, for a screenshot of each when something fails
 
   // --- phone ---
   const phone = await ctx('phone', { ...devices['iPhone 13'] });
+  // The phone runs as an older iPhone: without the newest browser features (iOS 16 has none of these), the app, including
+  // its PDF viewer, must still load and work. A page that quietly needs one of them fails here before it fails for someone.
+  await phone.addInitScript(() => {
+    for (const [owner, names] of [
+      [Promise, ['withResolvers', 'try']], [Array, ['fromAsync']], [Object, ['groupBy']], [Map, ['groupBy']], [Math, ['sumPrecise']],
+      [AbortSignal, ['any']], [URL, ['canParse', 'parse']], [Uint8Array, ['fromBase64', 'fromHex']],
+      [Set.prototype, ['union', 'intersection', 'difference', 'symmetricDifference', 'isSubsetOf', 'isSupersetOf', 'isDisjointFrom']],
+      [Map.prototype, ['getOrInsert', 'getOrInsertComputed']], [Uint8Array.prototype, ['toHex', 'toBase64', 'setFromBase64']],
+      [String.prototype, ['isWellFormed', 'toWellFormed']], [globalThis, ['Iterator', 'requestIdleCallback', 'cancelIdleCallback']],
+    ]) for (const name of names) try { delete owner[name]; } catch { /* already absent */ }
+  });
   await phone.goto(B);
   await phone.getByLabel('Email').fill(bobEmail);
   await phone.getByRole('textbox', { name: 'Password' }).fill('correct horse battery');
@@ -475,6 +486,7 @@ const opened = []; // pages, for a screenshot of each when something fails
   await treeRow(phone, 'Roadmap').locator('.tree-title').click();
   await editorHas(phone, 'Ship the beta in March.');
   await phone.waitForFunction(() => [...document.querySelectorAll('.bn-editor img')].some((i) => i.complete && i.naturalWidth > 0), null, { timeout: 10000 });
+  await phone.locator('.bn-editor .pdf-reader canvas').first().waitFor({ timeout: 20000 }); // the PDF viewer works too
   assert.ok(await phone.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), 'no sideways scrolling');
   await phone.waitForTimeout(500);
   await shot(phone, 'ui-phone-page');
