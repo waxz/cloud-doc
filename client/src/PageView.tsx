@@ -228,13 +228,17 @@ export function PageView({ pageId, me, dark, leading, trailing, linkFor, onTitle
   const reviewOnly = info.viaShare && !atLeast(info.role, 'commenter');
 
   const fileName = (title || 'Untitled').replace(/[\\/:*?"<>|]+/g, ' ').trim() || 'page';
+  const escapeHtmlText = (text: string) => text.replace(/[&<>]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[char]!);
   const exportAs = async (kind: 'md' | 'html' | 'print') => {
     if (!editor) return onError('The page is still loading.');
     // Let the menu finish closing, or its dropdown is still on screen when the print view is taken.
     if (kind === 'print') return void setTimeout(() => window.print(), 400);
     try {
       if (kind === 'md') download(`${fileName}.md`, `# ${title || 'Untitled'}\n\n${await editor.blocksToMarkdownLossy()}`, 'text/markdown');
-      else download(`${fileName}.html`, `<!doctype html><meta charset="utf-8"><title>${(title || 'Untitled').replace(/</g, '&lt;')}</title><h1>${(title || 'Untitled').replace(/</g, '&lt;')}</h1>${await editor.blocksToFullHTML()}`, 'text/html');
+      else {
+        const pageTitle = escapeHtmlText(title || 'Untitled');
+        download(`${fileName}.html`, `<!doctype html><meta charset="utf-8"><title>${pageTitle}</title><h1>${pageTitle}</h1>${await editor.blocksToFullHTML()}`, 'text/html');
+      }
     } catch (e) {
       onError(errorText(e));
     }

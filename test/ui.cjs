@@ -90,6 +90,15 @@ const opened = []; // pages, for a screenshot of each when something fails
   // --- a page with an emoji, text and uploads from the tree ---
   await newPage(alice, 'General');
   await alice.fill('.title', 'Roadmap');
+  await alice.fill('.title', 'R&D <guide> &amp;');
+  await btn(alice, 'Export page').click();
+  const htmlDownloadPromise = alice.waitForEvent('download');
+  await alice.getByRole('menuitem', { name: 'Download HTML' }).click();
+  const htmlDownload = await htmlDownloadPromise;
+  const htmlExport = fs.readFileSync(await htmlDownload.path(), 'utf8');
+  assert.match(htmlExport, /<title>R&amp;D &lt;guide&gt; &amp;amp;<\/title>/, 'HTML export preserves title text instead of decoding entities');
+  assert.match(htmlExport, /<h1>R&amp;D &lt;guide&gt; &amp;amp;<\/h1>/, 'HTML heading uses escaped title text');
+  await alice.fill('.title', 'Roadmap');
   await alice.getByRole('button', { name: 'Add icon' }).click();
   await alice.locator('.emoji', { hasText: '🚀' }).click();
   await treeRow(alice, 'Roadmap').locator('.tree-icon', { hasText: '🚀' }).waitFor();
