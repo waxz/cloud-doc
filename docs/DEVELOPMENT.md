@@ -17,7 +17,7 @@ node test/webdav-server.mjs
 
 and add `http://127.0.0.1:8793` (user `dav`, password `davpass`) in *Settings → Storage*, or point it at a local cloud-drive. Open the app in two browsers to see live editing.
 
-Other scripts: `npm run typecheck`, `npm run build`, and `npm run check:browsers` (after a build): it fails when the built app uses syntax older iPhones can't read, such as regular-expression lookbehind (Safari before 16.4), because Safari rejects a whole file for one unreadable pattern and the page then fails to render on an old phone while working on a new one. The build targets Safari 15 syntax, and the browser test suite runs this check first.
+Other scripts: `npm run typecheck`, `npm run build`, and `npm run check:browsers` (after a build): it fails when the built app uses syntax older iPhones can't read, such as regular-expression lookbehind (Safari before 16.4), because Safari rejects a whole file for one unreadable pattern and the page then fails to render on an old phone while working on a new one. The build targets Safari 15 syntax, and the browser test suite runs this check first. The suite also runs its phone session **without the newest browser features** (`Iterator`, `Promise.withResolvers`, `Promise.try`, Set methods, …, none of which iOS 16 has), PDF viewer included, so a dependency on one of them fails the tests. The PDF viewer is loaded only when a PDF is shown, from PDF.js's *legacy* build, with a one-function polyfill (`client/src/pdf-polyfills.ts`) in the page and in the worker.
 
 ## Tests
 

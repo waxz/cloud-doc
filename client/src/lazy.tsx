@@ -10,8 +10,9 @@ export const ProjectSettings = lazy(() => import('./Settings').then((m) => ({ de
 export const WorkspaceFiles = lazy(() => import('./WorkspaceFiles').then((m) => ({ default: m.WorkspaceFiles })));
 export const UserSettings = lazy(() => import('./UserSettings').then((m) => ({ default: m.UserSettings })));
 
-// Start fetching the editor's code at once when the URL is a page, rather than after the sidebar mounts.
-if (/^\/(w|s)\//.test(window.location.pathname)) void import('./PageView');
+// (The editor's code is deliberately not fetched ahead of time with a second import(): an old Safari that fails to run the
+// chunk once can answer the second import() with a half-run module, which shows up as nonsense errors; a single import
+// reports the real one.)
 
 /**
  * When a screen's code can't be loaded or fails as it starts (an old browser that can't read it, a connection that dropped

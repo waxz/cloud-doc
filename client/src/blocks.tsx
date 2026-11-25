@@ -4,9 +4,8 @@ import { IconArrowAutofitHeight, IconArrowAutofitWidth, IconChevronDown, IconChe
 import katex from 'katex';
 import 'katex/dist/katex.min.css';
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
-import * as pdfjsLib from 'pdfjs-dist';
-import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { api, type Comment } from './api';
+import { loadPdfjs, type PDFDocumentLoadingTask, type PDFDocumentProxy } from './pdf';
 
 /**
  * A PDF shown inline, like BlockNote's image and video blocks: upload or
@@ -133,18 +132,18 @@ function PdfReader({ url, name, pageId: blockPageId, commentable: blockCommentab
 
   // The document is fetched once per file; the pages are drawn again whenever the viewer's width changes,
   // so they always fit it.
-  const [doc, setDoc] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
+  const [doc, setDoc] = useState<PDFDocumentProxy | null>(null);
   const [width, setWidth] = useState(0);
 
   useEffect(() => {
     if (!url) return;
     let cancelled = false;
-    let task: pdfjsLib.PDFDocumentLoadingTask | null = null;
+    let task: PDFDocumentLoadingTask | null = null;
     setLoading(true);
     setError('');
     setDoc(null);
-    pdfjsLib.GlobalWorkerOptions.workerSrc = workerSrc;
     (async () => {
+      const pdfjsLib = await loadPdfjs();
       let response: Response | null = null;
       for (let attempt = 0; attempt < 2; attempt++) {
         response = await fetch(url, { cache: 'force-cache' });
@@ -387,7 +386,7 @@ function PdfReader({ url, name, pageId: blockPageId, commentable: blockCommentab
         if (context) {
           await page.render({ canvas, canvasContext: context, viewport, transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined }).promise;
         }
-        const textLayer = new pdfjsLib.TextLayer({ textContentSource: await page.getTextContent(), container: text, viewport });
+        const textLayer = new (await loadPdfjs()).TextLayer({ textContentSource: await page.getTextContent(), container: text, viewport });
         await textLayer.render();
         // The strip PDF.js keeps at the end of a text layer: while the mouse is down it spreads over the layer, so a
         // drag that crosses gaps between words keeps its place instead of jumping to the start or the end.
