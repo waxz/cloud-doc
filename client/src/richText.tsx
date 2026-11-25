@@ -162,9 +162,12 @@ function inline(text: string, ctx: Ctx, base = 0): ReactNode[] {
   const parts = [
     '`([^`\\n]+)`',                                   // 1 code
     '\\$(?!\\s)([^$\\n]*?[^\\s$])\\$(?!\\d)',          // 2 inline math
-    '\\*\\*(?!\\s)(.+?)(?<!\\s)\\*\\*',                // 3 bold
-    '~~(?!\\s)(.+?)(?<!\\s)~~',                       // 4 strike
-    '(?<![\\w*])\\*(?![\\s*])(.+?)(?<![\\s*])\\*(?![\\w*])', // 5 italic
+    // No lookbehind anywhere in this file: Safari only has it from iOS 16.4, and a regex it can't read stops the whole
+    // page's code from loading. "Doesn't end in a space" is written into the pattern instead (`.*?\\S`), and the
+    // "not right after a word character" check for italics is done in the loop below.
+    '\\*\\*(?!\\s)(.*?\\S)\\*\\*',                    // 3 bold
+    '~~(?!\\s)(.*?\\S)~~',                           // 4 strike
+    '\\*(?![\\s*])(.*?[^\\s*])\\*(?![\\w*])',        // 5 italic
     '\\[([^\\]\\n]+)\\]\\(([^)\\s]+)\\)',              // 6 text, 7 url
     '(https?:\\/\\/[^\\s<>]*[^\\s<>.,;:!?)\\]\'"])',   // 8 bare url
     names.length ? `(@(?:${names.join('|')})(?![\\p{L}\\p{N}_]))` : '()', // 9 member
@@ -175,7 +178,17 @@ function inline(text: string, ctx: Ctx, base = 0): ReactNode[] {
   const out: ReactNode[] = [];
   let last = 0;
   let k = base;
-  for (const m of text.matchAll(re)) {
+  for (let m = re.exec(text); m !== null; m = re.exec(text)) {
+    // an empty match (the member pattern when nobody can be mentioned) says nothing: move on
+    if (m[0] === '') {
+      re.lastIndex++;
+      continue;
+    }
+    // an italic star right after a word character or another star is just text: look again from the next character
+    if (m[5] !== undefined && m.index > 0 && /[\w*]/.test(text[m.index - 1]!)) {
+      re.lastIndex = m.index + 1;
+      continue;
+    }
     if (m.index! > last) out.push(text.slice(last, m.index));
     last = m.index! + m[0].length;
     const key = k++;
@@ -232,7 +245,20 @@ export function RichText({ text, members, onToken, active }: { text: string } & 
       i++;
       out.push(math(src.join('\n'), true, key++));
     } else if (/^\s*\|.*\|?\s*$/.test(line) && i + 1 < lines.length && /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(lines[i + 1]!) && lines[i + 1]!.includes('-')) {
-      const split = (row: string) => row.trim().replace(/^\|/, '').replace(/\|$/, '').split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, '|'));
+      // cells are split at every | that has no backslash in front of it
+      const split = (row: string) => {
+        const body = row.trim().replace(/^\|/, '').replace(/\|$/, '');
+        const cells: string[] = [];
+        let from = 0;
+        for (let at = 0; at < body.length; at++) {
+          if (body[at] === '|' && body[at - 1] !== '\\') {
+            cells.push(body.slice(from, at));
+            from = at + 1;
+          }
+        }
+        cells.push(body.slice(from));
+        return cells.map((c) => c.trim().replace(/\\\|/g, '|'));
+      };
       const head = split(line);
       const align = split(lines[i + 1]!).map((c) => (/^:-+:$/.test(c) ? 'center' : /-:$/.test(c) ? 'right' : 'left') as 'left' | 'center' | 'right');
       const rows: string[][] = [];

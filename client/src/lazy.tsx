@@ -1,5 +1,5 @@
-import { lazy, type ReactNode, Suspense, useRef } from 'react';
-import { Loader } from '@mantine/core';
+import { Component, lazy, type ReactNode, Suspense, useRef } from 'react';
+import { Button, Loader, Stack, Text } from '@mantine/core';
 
 // Heavy screens load when first needed, so signing in and the sidebar don't wait for the
 // editor, the PDF viewer or the admin pages.
@@ -13,12 +13,40 @@ export const UserSettings = lazy(() => import('./UserSettings').then((m) => ({ d
 // Start fetching the editor's code at once when the URL is a page, rather than after the sidebar mounts.
 if (/^\/(w|s)\//.test(window.location.pathname)) void import('./PageView');
 
-/** A centred spinner while a lazy screen's code arrives. */
+/**
+ * When a screen's code can't be loaded or fails as it starts (an old browser that can't read it, a connection that dropped
+ * halfway), say so and show why, with a way to try again: otherwise React removes everything and the page is just blank.
+ */
+class LoadErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null };
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div className="empty" role="alert">
+        <Stack align="center" gap="xs" maw={420} px="md">
+          <Text fw={600}>This page couldn't be shown</Text>
+          <Text size="sm" c="dimmed" ta="center">
+            Part of the app didn't load or didn't start in this browser. Reloading often fixes a dropped connection; if it keeps happening, updating iOS or the browser may help.
+          </Text>
+          <Text size="xs" c="dimmed" ta="center" style={{ wordBreak: 'break-word' }}>{String(this.state.error.message || this.state.error).slice(0, 300)}</Text>
+          <Button variant="light" onClick={() => window.location.reload()}>Reload</Button>
+        </Stack>
+      </div>
+    );
+  }
+}
+
+/** A centred spinner while a lazy screen's code arrives (and a clear message if it never does). */
 export function Loading({ children }: { children: ReactNode }) {
   return (
-    <Suspense fallback={<div className="page-loading page-loading-static" role="status"><Loader size="md" /></div>}>
-      {children}
-    </Suspense>
+    <LoadErrorBoundary>
+      <Suspense fallback={<div className="page-loading page-loading-static" role="status"><Loader size="md" /></div>}>
+        {children}
+      </Suspense>
+    </LoadErrorBoundary>
   );
 }
 

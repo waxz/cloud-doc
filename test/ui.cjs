@@ -8,6 +8,8 @@ const fs = require('node:fs');
 const B = process.env.WIKI_URL ?? 'http://127.0.0.1:8787';
 const SHOTS = process.env.SHOTS ?? '.test-output';
 fs.mkdirSync(SHOTS, { recursive: true });
+// The built app must only use syntax older iPhones can read (see scripts/check-browsers.mjs).
+require('node:child_process').execFileSync('node', ['scripts/check-browsers.mjs'], { stdio: 'inherit' });
 const run = Date.now().toString(36);
 const opened = []; // pages, for a screenshot of each when something fails
 
@@ -449,6 +451,16 @@ const opened = []; // pages, for a screenshot of each when something fails
   await alice.getByText('No versions yet.').waitFor();
   await alice.getByRole('button', { name: 'Close panel' }).click();
   console.log('✓ history panel: usage shown, cleared with one button');
+
+  // if a page's code can't be loaded, say so and offer a reload, rather than a blank screen
+  const broken = await alice.context().newPage();
+  await broken.route('**/assets/PageView-*.js', (r) => r.abort());
+  await broken.goto(alice.url());
+  await broken.getByText("This page couldn't be shown").waitFor({ timeout: 15000 });
+  await broken.getByRole('button', { name: 'Reload' }).waitFor();
+  await broken.close();
+  console.log('✓ a page whose code fails to load shows a message and Reload, not a blank screen');
+
 
   // --- phone ---
   const phone = await ctx('phone', { ...devices['iPhone 13'] });
