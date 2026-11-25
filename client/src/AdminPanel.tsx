@@ -151,8 +151,10 @@ function InstanceSettings({ onError }: { onError: (m: string) => void }) {
   const [rateMin, setRateMin] = useState<number | string>(600);
   const [rateHour, setRateHour] = useState<number | string>('');
   const [cap, setCap] = useState<number | string>('');
+  const [defComments, setDefComments] = useState<number | string>('');
+  const [pageMb, setPageMb] = useState<number | string>(10);
   const [workspaces, setWorkspaces] = useState<{ id: string; name: string }[]>([]);
-  const show = (s: InstanceSettings) => (setSaved(s), setEmail(s.adminEmail), setDefStorage(s.defaultStorageLimit ? +(s.defaultStorageLimit / MB).toFixed(2) : ''), setDefPages(s.defaultMaxPages ?? ''), setFileMb(s.maxFileBytes ? +(s.maxFileBytes / MB).toFixed(2) : ''), setRateMin(s.ratePerMinute), setRateHour(s.ratePerHour || ''), setCap(s.playgroundMaxUsers ?? ''));
+  const show = (s: InstanceSettings) => (setSaved(s), setEmail(s.adminEmail), setDefStorage(s.defaultStorageLimit ? +(s.defaultStorageLimit / MB).toFixed(2) : ''), setDefPages(s.defaultMaxPages ?? ''), setFileMb(s.maxFileBytes ? +(s.maxFileBytes / MB).toFixed(2) : ''), setRateMin(s.ratePerMinute), setRateHour(s.ratePerHour || ''), setCap(s.playgroundMaxUsers ?? ''), setDefComments(s.defaultMaxComments ?? ''), setPageMb(+(s.maxPageBytes / MB).toFixed(2)));
   const [note, setNote] = useState('');
   useEffect(() => {
     api.adminSettings().then(show, (e) => onError(errorText(e)));
@@ -202,6 +204,8 @@ function InstanceSettings({ onError }: { onError: (m: string) => void }) {
               ratePerMinute: rateMin === '' ? null : Math.max(0, Math.floor(Number(rateMin))),
               ratePerHour: rateHour === '' ? null : Math.max(0, Math.floor(Number(rateHour))),
               playgroundMaxUsers: n(cap),
+              defaultMaxComments: n(defComments) == null ? null : Math.floor(n(defComments)!),
+              maxPageBytes: n(pageMb) == null ? null : Math.round(n(pageMb)! * MB),
             }));
             setLimitNote('Saved.');
           } catch (err) {
@@ -219,6 +223,8 @@ function InstanceSettings({ onError }: { onError: (m: string) => void }) {
           <Group align="end" wrap="wrap">
             <NumberInput label="New workspaces: storage (MB)" description="Files and page history" min={0} decimalScale={2} value={defStorage} onChange={(v) => (setDefStorage(v), setLimitNote(''))} w={210} />
             <NumberInput label="New workspaces: pages" min={0} allowDecimal={false} value={defPages} onChange={(v) => (setDefPages(v), setLimitNote(''))} w={170} />
+            <NumberInput label="New workspaces: comments" min={0} allowDecimal={false} value={defComments} onChange={(v) => (setDefComments(v), setLimitNote(''))} w={190} />
+            <NumberInput label="Largest page (MB)" description="Past it a page is locked for editors. Default 10" min={0} decimalScale={2} value={pageMb} onChange={(v) => (setPageMb(v), setLimitNote(''))} w={230} />
             <NumberInput label="Largest single file (MB)" description="Applies everywhere" min={0} decimalScale={2} value={fileMb} onChange={(v) => (setFileMb(v), setLimitNote(''))} w={200} />
             <NumberInput label="Requests per person per minute" description="0 = no limit; admins are exempt" min={0} allowDecimal={false} value={rateMin} onChange={(v) => (setRateMin(v), setLimitNote(''))} w={230} />
             <NumberInput label="Requests per person per hour" description="Empty or 0 = no limit" min={0} allowDecimal={false} value={rateHour} onChange={(v) => (setRateHour(v), setLimitNote(''))} w={230} />

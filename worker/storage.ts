@@ -327,26 +327,31 @@ export interface WorkspaceLimits {
   /** Bytes of files plus page history; null = no limit. */
   storageLimit: number | null;
   maxPages: number | null;
+  /** Comments in the whole workspace; null = no limit. */
+  maxComments: number | null;
 }
 
 export async function workspaceLimits(env: Env, wid: string): Promise<WorkspaceLimits> {
-  const row = await env.DB.prepare('SELECT storage_limit, max_pages FROM workspaces WHERE id = ?').bind(wid).first<{ storage_limit: number | null; max_pages: number | null }>();
-  return { storageLimit: row?.storage_limit ?? null, maxPages: row?.max_pages ?? null };
+  const row = await env.DB.prepare('SELECT storage_limit, max_pages, max_comments FROM workspaces WHERE id = ?')
+    .bind(wid)
+    .first<{ storage_limit: number | null; max_pages: number | null; max_comments: number | null }>();
+  return { storageLimit: row?.storage_limit ?? null, maxPages: row?.max_pages ?? null, maxComments: row?.max_comments ?? null };
 }
 
 /** What a workspace keeps right now: file bytes, history bytes, page count. */
-export async function workspaceUsage(env: Env, wid: string): Promise<{ files: number; history: number; bytes: number; pages: number; fileCount: number }> {
+export async function workspaceUsage(env: Env, wid: string): Promise<{ files: number; history: number; bytes: number; pages: number; fileCount: number; comments: number }> {
   const row = await env.DB.prepare(
     `SELECT (SELECT COALESCE(SUM(size), 0) FROM files WHERE workspace_id = ?1) AS files,
             (SELECT COUNT(*) FROM files WHERE workspace_id = ?1) AS file_count,
             (SELECT COALESCE(SUM(v.size), 0) FROM page_versions v JOIN pages p ON p.id = v.page_id JOIN projects pr ON pr.id = p.project_id WHERE pr.workspace_id = ?1) AS history,
-            (SELECT COUNT(*) FROM pages p JOIN projects pr ON pr.id = p.project_id WHERE pr.workspace_id = ?1) AS pages`
+            (SELECT COUNT(*) FROM pages p JOIN projects pr ON pr.id = p.project_id WHERE pr.workspace_id = ?1) AS pages,
+            (SELECT COUNT(*) FROM comments c JOIN pages p ON p.id = c.page_id JOIN projects pr ON pr.id = p.project_id WHERE pr.workspace_id = ?1) AS comments`
   )
     .bind(wid)
-    .first<{ files: number; file_count: number; history: number; pages: number }>();
+    .first<{ files: number; file_count: number; history: number; pages: number; comments: number }>();
   const files = row?.files ?? 0;
   const history = row?.history ?? 0;
-  return { files, history, bytes: files + history, pages: row?.pages ?? 0, fileCount: row?.file_count ?? 0 };
+  return { files, history, bytes: files + history, pages: row?.pages ?? 0, fileCount: row?.file_count ?? 0, comments: row?.comments ?? 0 };
 }
 
 /** The most one uploaded file may weigh on this instance (set by the admin); null = no cap. */
@@ -361,7 +366,7 @@ export async function defaultLimits(env: Env): Promise<WorkspaceLimits> {
     const n = Number(await getAppSetting(env, key));
     return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
   };
-  return { storageLimit: await num('default_storage_limit'), maxPages: await num('default_max_pages') };
+  return { storageLimit: await num('default_storage_limit'), maxPages: await num('default_max_pages'), maxComments: await num('default_max_comments') };
 }
 
 /** Throws 413 when `adding` more bytes would take the workspace past its storage limit. */
@@ -415,4 +420,32 @@ export async function pastPageLimit(env: Env, wid: string, id: string): Promise<
     .bind(wid, id)
     .first<{ n: number }>();
   return (row?.n ?? 0) > maxPages;
+}
+
+/** Throws 403 when the workspace already has as many comments as it may. */
+export async function checkCommentLimit(env: Env, wid: string, adding = 1): Promise<void> {
+  const { maxComments } = await workspaceLimits(env, wid);
+  if (maxComments == null) return;
+  const { comments } = await workspaceUsage(env, wid);
+  if (comments + adding > maxComments) throw new HttpError(403, `this workspace is limited to ${maxComments} comments`);
+}
+
+/** After adding a comment: is it beyond the comment limit, counting comments in the order they were inserted? (See pastStorageLimit.) */
+export async function pastCommentLimit(env: Env, wid: string, id: string): Promise<boolean> {
+  const { maxComments } = await workspaceLimits(env, wid);
+  if (maxComments == null) return false;
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM comments c JOIN pages p ON p.id = c.page_id JOIN projects pr ON pr.id = p.project_id
+     WHERE pr.workspace_id = ?1 AND c.rowid <= (SELECT rowid FROM comments WHERE id = ?2)`
+  )
+    .bind(wid, id)
+    .first<{ n: number }>();
+  return (row?.n ?? 0) > maxComments;
+}
+
+/** The most one page's document may weigh on this instance (set by the admin; default 10 MB). A larger page is made read-only. */
+export const DEFAULT_MAX_PAGE_BYTES = 10 * 1024 * 1024;
+export async function maxPageBytes(env: Env): Promise<number> {
+  const n = Number(await getAppSetting(env, 'max_page_bytes'));
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_MAX_PAGE_BYTES;
 }

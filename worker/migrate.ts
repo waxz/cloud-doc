@@ -18,6 +18,7 @@ import storageRootPath from '../migrations/0017_storage_root_path.sql';
 import appSettings from '../migrations/0018_app_settings.sql';
 import workspaceLimits from '../migrations/0019_workspace_limits.sql';
 import projectReadOnly from '../migrations/0020_project_read_only.sql';
+import workspaceCommentLimit from '../migrations/0021_workspace_comment_limit.sql';
 
 /**
  * Migrations bundled into the Worker, applied on first use so a plain
@@ -46,6 +47,7 @@ const MIGRATIONS: [name: string, sql: string][] = [
   ['0018_app_settings.sql', appSettings],
   ['0019_workspace_limits.sql', workspaceLimits],
   ['0020_project_read_only.sql', projectReadOnly],
+  ['0021_workspace_comment_limit.sql', workspaceCommentLimit],
 ];
 
 /** Splits a migration into statements (no semicolons inside strings in these files). */

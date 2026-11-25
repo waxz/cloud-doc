@@ -111,7 +111,7 @@ The admin shares storage of their own with chosen people, each with a limit, and
 Want people to try Cloud Doc without risking your storage or your Cloudflare allowance? In **Admin → Settings** switch on **open registration**, pick the *playground workspace* new accounts join, and set the limits:
 
 - **Per workspace** (also in *Workspace settings*): a storage limit for files and page history, and a page limit. Limits are enforced for uploads, history, imports and page creation, and hold under parallel bursts.
-- **One file** may not weigh more than the size you set; automatic history keeps only the newest 30 versions per page, and a page's *History* panel shows what it takes and has buttons to clear it.
+- **One file** may not weigh more than the size you set, nor one page more than the largest page you allow (past it the page is locked for editors; admins can trim it); a workspace can have a **comment limit** too; automatic history keeps only the newest 30 versions per page, and a page's *History* panel shows what it takes and has buttons to clear it.
 - **Per person**: requests per minute (default 600) and per hour; guests are limited by address; the admin is exempt.
 - **Sign-up**: five accounts an hour per address, an optional cap on accounts, and new accounts are plain members who **cannot create workspaces**.
 - **Read-only projects**: mark a *Demo* project read only and members can read but not edit it, while every other project stays editable by any member.
@@ -145,6 +145,7 @@ A phone-first layout (slide-out page tree, bottom-sheet panels), a hideable page
 | **Sharing** | Links for view, comment or edit, with subpages and expiry · view links publish a page without sign-in |
 | **History** | Automatic and named versions, preview and restore, kept in your storage |
 | **Search** | Accent-insensitive prefix search with in-context matches that jump to the spot · or an instant filter by page title |
+| **Scale** | Only the first 100 KB of a page is indexed for search · pages are saved by appending small updates, merged now and then · a big sidebar loads one level at a time · limits on page size, comments, pages and files |
 | **Storage** | Per-workspace WebDAV storage (server URL + folder, created for you) · shared storages with per-user limits · **per-workspace storage and page limits** · move, back up and restore a workspace · encrypted credentials |
 | **Admin** | Accounts and registration links that can add people to a workspace with a shared storage · shared storages · per-user usage, request rate and errors · **open registration switch for a playground** with limits, request limits and an account cap · contact email on the sign-in page |
 | **Sign-in** | Admin contact email for forgotten passwords · **recovery mode** (a `RECOVERY_SECRET` you set in the Cloudflare dashboard) for a forgotten admin password · guests read a snapshot with no live connection |

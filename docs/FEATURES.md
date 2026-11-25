@@ -123,3 +123,9 @@ Fields are 16px on touch screens so Safari doesn't zoom in when they get focus, 
 - **Open registration**: a switch in *Admin → Settings*, with the playground workspace new accounts join (as members who cannot create workspaces), five sign-ups an hour per address, and an optional cap on accounts.
 - **Read-only projects** (*Project settings*): everyone with access reads, only workspace and project admins edit. Other projects are editable by any member.
 - **History** keeps the newest 30 automatic versions per page; the *History* panel shows how much a page's history and the workspace use, and can delete one version, the automatic ones, or all of it.
+
+## Room for many pages
+
+- **Bounded cost per page.** Only the first 100 KB of a page's text goes into the search index, so each page's share of the database is bounded. The admin can set the **largest page** (default 10 MB): past it, editors can no longer add to the page (everyone is told, with a banner), while admins can still edit it to cut it down, and restoring an earlier version lifts the lock. A **comment limit** per workspace (with a default for new ones) stops comments from being used to fill the database.
+- **A big sidebar loads a level at a time.** Up to 1,500 pages in a workspace the whole tree is sent at once; beyond that the sidebar gets the top-level pages and fetches a page's children when you unfold it (and the way down to the page you're reading). *Titles* search then runs on the server. (The threshold is `treeLazyOver` in the admin settings API.)
+- **Cheaper saves.** A page is saved by appending what changed (one small row) instead of rewriting the whole document, and the pieces are merged into one copy now and then and when the last person leaves. That cuts the rows written (the Free plan's tightest daily limit) and the bytes written for large pages; pages stored before simply count as the merged copy.

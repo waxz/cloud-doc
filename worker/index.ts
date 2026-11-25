@@ -81,9 +81,9 @@ route('POST', '/api/import', (r, e, u) => backup.importStep(r, e, u));
 route('GET', '/api/workspaces/:w/usage', (r, e, u, [w]) => ws.getWorkspaceUsage(e, u, w!));
 route('PUT', '/api/workspaces/:w/limits', (r, e, u, [w]) => ws.setWorkspaceLimits(r, e, u, w!));
 route('GET', '/api/workspaces/:w/projects', (r, e, u, [w]) => ws.listProjects(e, u, w!));
-route('GET', '/api/workspaces/:w/tree', (r, e, u, [w]) => ws.listWorkspacePages(e, u, w!));
+route('GET', '/api/workspaces/:w/tree', (r, e, u, [w], url) => ws.listWorkspacePages(e, u, w!, url));
 route('POST', '/api/workspaces/:w/projects', (r, e, u, [w]) => ws.createProject(r, e, u, w!));
-route('GET', '/api/workspaces/:w/search', (r, e, u, [w], url) => pages.search(e, u, w!, url.searchParams.get('q') ?? ''));
+route('GET', '/api/workspaces/:w/search', (r, e, u, [w], url) => pages.search(e, u, w!, url.searchParams.get('q') ?? '', url.searchParams.get('titles') === '1'));
 
 route('PATCH', '/api/projects/:p', (r, e, u, [p]) => ws.updateProject(r, e, u, p!));
 route('DELETE', '/api/projects/:p', (r, e, u, [p]) => ws.deleteProject(e, u, p!));

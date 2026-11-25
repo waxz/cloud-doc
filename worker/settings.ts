@@ -573,6 +573,11 @@ async function instanceSettings(env: Env) {
     /** Limits every NEW workspace starts with (existing ones keep theirs; change those in Workspace settings). */
     defaultStorageLimit: await num('default_storage_limit'),
     defaultMaxPages: await num('default_max_pages'),
+    defaultMaxComments: await num('default_max_comments'),
+    /** The most one page's document may weigh before it is made read-only (default 10 MB). */
+    maxPageBytes: (await num('max_page_bytes')) ?? 10 * 1024 * 1024,
+    /** A workspace with more pages than this loads its page tree a level at a time (default 1500). */
+    treeLazyOver: (await num('tree_lazy_over')) ?? 1500,
     /** The most one uploaded file may weigh, anywhere on this instance. */
     maxFileBytes: await num('max_file_bytes'),
     /** Requests one person may make per minute (default 600; 0 = no limit) and per hour (0 = no limit). The admin is exempt. */
@@ -609,6 +614,9 @@ export async function adminSetSettings(req: Request, env: Env, user: User | null
     adminEmail?: string;
     defaultStorageLimit?: unknown;
     defaultMaxPages?: unknown;
+    defaultMaxComments?: unknown;
+    maxPageBytes?: unknown;
+    treeLazyOver?: unknown;
     maxFileBytes?: unknown;
     ratePerMinute?: unknown;
     ratePerHour?: unknown;
@@ -623,6 +631,9 @@ export async function adminSetSettings(req: Request, env: Env, user: User | null
   }
   if ('defaultStorageLimit' in b) await setting(env, 'default_storage_limit', limitSetting(b.defaultStorageLimit, 'the storage limit'));
   if ('defaultMaxPages' in b) await setting(env, 'default_max_pages', limitSetting(b.defaultMaxPages, 'the page limit'));
+  if ('defaultMaxComments' in b) await setting(env, 'default_max_comments', limitSetting(b.defaultMaxComments, 'the comment limit'));
+  if ('maxPageBytes' in b) await setting(env, 'max_page_bytes', limitSetting(b.maxPageBytes, 'the page size limit'));
+  if ('treeLazyOver' in b) await setting(env, 'tree_lazy_over', limitSetting(b.treeLazyOver, 'the tree threshold'));
   if ('maxFileBytes' in b) await setting(env, 'max_file_bytes', limitSetting(b.maxFileBytes, 'the file size limit'));
   for (const [field, key, what] of [['ratePerMinute', 'rate_per_minute', 'the per-minute limit'], ['ratePerHour', 'rate_per_hour', 'the per-hour limit']] as const) {
     if (field in b) {
