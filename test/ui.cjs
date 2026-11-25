@@ -96,8 +96,12 @@ const opened = []; // pages, for a screenshot of each when something fails
   await alice.getByRole('menuitem', { name: 'Download HTML' }).click();
   const htmlDownload = await htmlDownloadPromise;
   const htmlExport = fs.readFileSync(await htmlDownload.path(), 'utf8');
+  assert.match(htmlExport, /<!doctype html>\s*<html lang="en">/, 'HTML export is a complete standalone document');
   assert.match(htmlExport, /<title>R&amp;D &lt;guide&gt; &amp;amp;<\/title>/, 'HTML export preserves title text instead of decoding entities');
   assert.match(htmlExport, /<h1>R&amp;D &lt;guide&gt; &amp;amp;<\/h1>/, 'HTML heading uses escaped title text');
+  assert.match(htmlExport, /name="viewport"/, 'HTML export adapts to mobile screens');
+  assert.match(htmlExport, /@media print/, 'HTML export includes print styling');
+  assert.match(htmlExport, /class="document-header"/, 'HTML export provides a consistent document header');
   await alice.fill('.title', 'Roadmap');
   await alice.getByRole('button', { name: 'Add icon' }).click();
   await alice.locator('.emoji', { hasText: '🚀' }).click();
