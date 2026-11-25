@@ -13,7 +13,8 @@
     "test:api": "node test/api.mjs",
     "test:ui": "node test/ui.cjs",
     "predeploy": "node scripts/ensure-storage-key.mjs --remote",
-    "postdeploy": "node scripts/ensure-storage-key.mjs --remote --strict"
+    "postdeploy": "node scripts/ensure-storage-key.mjs --remote --strict",
+    "check:browsers": "node scripts/check-browsers.mjs"
   },
   "dependencies": {
     "@blocknote/core": "^0.57.0",

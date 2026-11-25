@@ -17,7 +17,7 @@ node test/webdav-server.mjs
 
 and add `http://127.0.0.1:8793` (user `dav`, password `davpass`) in *Settings → Storage*, or point it at a local cloud-drive. Open the app in two browsers to see live editing.
 
-Other scripts: `npm run typecheck`, `npm run build`.
+Other scripts: `npm run typecheck`, `npm run build`, and `npm run check:browsers` (after a build): it fails when the built app uses syntax older iPhones can't read, such as regular-expression lookbehind (Safari before 16.4), because Safari rejects a whole file for one unreadable pattern and the page then fails to render on an old phone while working on a new one. The build targets Safari 15 syntax, and the browser test suite runs this check first.
 
 ## Tests
 
