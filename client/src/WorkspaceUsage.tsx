@@ -13,11 +13,12 @@ export function WorkspaceUsage({ workspaceId, me, onError }: { workspaceId: stri
   const [usage, setUsage] = useState<Usage | null>(null);
   const [storageMb, setStorageMb] = useState<number | string>('');
   const [pages, setPages] = useState<number | string>('');
+  const [comments, setComments] = useState<number | string>('');
   const [note, setNote] = useState('');
   const load = useCallback(
     () =>
       api.workspaceUsage(workspaceId).then(
-        (u) => (setUsage(u), setStorageMb(u.storageLimit ? +(u.storageLimit / MB).toFixed(2) : ''), setPages(u.maxPages ?? '')),
+        (u) => (setUsage(u), setStorageMb(u.storageLimit ? +(u.storageLimit / MB).toFixed(2) : ''), setPages(u.maxPages ?? ''), setComments(u.maxComments ?? '')),
         (e) => onError(errorText(e))
       ),
     [workspaceId, onError]
@@ -45,6 +46,8 @@ export function WorkspaceUsage({ workspaceId, me, onError }: { workspaceId: stri
       <Text size="sm">
         {usage.pages} page{usage.pages === 1 ? '' : 's'}
         {usage.maxPages != null ? ` of ${usage.maxPages} allowed` : ', no limit'}
+        {` · ${usage.comments} comment${usage.comments === 1 ? '' : 's'}`}
+        {usage.maxComments != null ? ` of ${usage.maxComments} allowed` : ''}
         {usage.maxFileBytes != null ? ` · one file may weigh at most ${formatBytes(usage.maxFileBytes)}` : ''}
       </Text>
       {me.role === 'admin' ? (
@@ -55,6 +58,7 @@ export function WorkspaceUsage({ workspaceId, me, onError }: { workspaceId: stri
               await api.setWorkspaceLimits(workspaceId, {
                 storageLimit: storageMb === '' || Number(storageMb) <= 0 ? null : Math.round(Number(storageMb) * MB),
                 maxPages: pages === '' || Number(pages) <= 0 ? null : Math.floor(Number(pages)),
+                maxComments: comments === '' || Number(comments) <= 0 ? null : Math.floor(Number(comments)),
               });
               setNote('Saved.');
               await load();
@@ -67,6 +71,7 @@ export function WorkspaceUsage({ workspaceId, me, onError }: { workspaceId: stri
           <Group align="end" wrap="wrap">
             <NumberInput label="Storage limit (MB)" description="Files and history. Empty = none" min={0} decimalScale={2} value={storageMb} onChange={setStorageMb} w={190} />
             <NumberInput label="Page limit" description="Empty = none" min={0} allowDecimal={false} value={pages} onChange={setPages} w={150} />
+            <NumberInput label="Comment limit" description="Empty = none" min={0} allowDecimal={false} value={comments} onChange={setComments} w={150} />
             <Button type="submit" size="sm">Save limits</Button>
             {note && <Text size="sm" c="teal">{note}</Text>}
           </Group>

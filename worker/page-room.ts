@@ -5,7 +5,7 @@ import { type Role, atLeast } from './access.js';
 import type { Env } from './env.js';
 import { useStorageKey } from './secret.js';
 import { HttpError, json, newId } from './http.js';
-import { WebDav, checkQuota, checkWorkspaceQuota, historyKey, resolveStorage, storageById, workspaceOfPage, pastStorageLimit } from './storage.js';
+import { WebDav, checkQuota, checkWorkspaceQuota, historyKey, maxPageBytes, resolveStorage, storageById, workspaceOfPage, pastStorageLimit } from './storage.js';
 import { fileIdsIn, syncFileRefs } from './files.js';
 import { deriveId, fileIdsInText, rewriteDocument } from './rewrite.js';
 
@@ -33,9 +33,20 @@ const SYNC_WINDOW_MAX = 1500;
 /** Awareness (cursors, presence) is dropped, not queued, above this sustained rate per socket. */
 const AWARENESS_PER_SEC = 20;
 const AWARENESS_BURST = 40;
-const MAX_MESSAGE_BYTES = 16 * 1024 * 1024;
+const MAX_MESSAGE_BYTES = 8 * 1024 * 1024;
+/** Between two saves one socket may send this many bytes of edits: a script can't grow a page faster than the size check runs. */
+const SYNC_WINDOW_BYTES = 16 * 1024 * 1024;
 /** The room keeps at most this much document state; a page this big is not a wiki page. */
 const MAX_STATE_BYTES = 40 * 1024 * 1024;
+/**
+ * Only the first part of a page's text goes into the search index, which keeps each page's share of the database bounded
+ * (the index holds the text again, and one database row may not pass 2 MB). Search never read past 200 KB of a page anyway.
+ */
+const INDEX_TEXT_MAX = 100_000;
+/** The updates since the base copy are merged into it after this many rows or bytes, or on leaving after this many rows. */
+const COMPACT_ROWS = 400;
+const COMPACT_BYTES = 1024 * 1024;
+const COMPACT_ON_LEAVE = 20;
 
 interface ConnState {
   role: Role;
@@ -47,6 +58,7 @@ interface Meter {
   at: number;
   syncStart: number;
   syncCount: number;
+  syncBytes: number;
 }
 
 /**
@@ -66,6 +78,8 @@ export class PageRoom extends YServer<Env> {
 
   private ensureTables(): void {
     this.exec('CREATE TABLE IF NOT EXISTS doc_chunks (i INTEGER PRIMARY KEY, data BLOB NOT NULL)');
+    // what changed since the doc_chunks copy was written: one small row per save (see persist)
+    this.exec('CREATE TABLE IF NOT EXISTS doc_updates (i INTEGER PRIMARY KEY, data BLOB NOT NULL)');
     this.exec('CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL)');
   }
 
@@ -97,6 +111,7 @@ export class PageRoom extends YServer<Env> {
     conn.setState({ role, name: ctx.request.headers.get(NAME_HEADER) ?? '' });
     const result = super.onConnect(conn, ctx);
     this.announceMode(conn);
+    if (this.isOversize()) this.sendCustomMessage(conn, this.oversizeNotice());
     return result;
   }
 
@@ -146,7 +161,7 @@ export class PageRoom extends YServer<Env> {
       if (size > MAX_MESSAGE_BYTES) return void conn.close(4413, 'message too large');
       const first = message instanceof ArrayBuffer ? new Uint8Array(message)[0] : new Uint8Array(message.buffer, message.byteOffset, 1)[0];
       const now = Date.now();
-      const m = this.meters.get(conn.id) ?? { tokens: AWARENESS_BURST, at: now, syncStart: now, syncCount: 0 };
+      const m = this.meters.get(conn.id) ?? { tokens: AWARENESS_BURST, at: now, syncStart: now, syncCount: 0, syncBytes: 0 };
       this.meters.set(conn.id, m);
       if (first === 1) {
         m.tokens = Math.min(AWARENESS_BURST, m.tokens + ((now - m.at) / 1000) * AWARENESS_PER_SEC);
@@ -157,30 +172,83 @@ export class PageRoom extends YServer<Env> {
         if (now - m.syncStart > SYNC_WINDOW_MS) {
           m.syncStart = now;
           m.syncCount = 0;
+          m.syncBytes = 0;
         }
-        if (++m.syncCount > SYNC_WINDOW_MAX) return void conn.close(4429, 'too many messages');
+        m.syncBytes += size;
+        if (++m.syncCount > SYNC_WINDOW_MAX || m.syncBytes > SYNC_WINDOW_BYTES) return void conn.close(4429, 'too many messages');
       }
     }
     return super.onMessage(conn, message);
   }
 
-  /** Viewers and commenters receive the document but their edits are ignored. */
+  /**
+   * Viewers and commenters receive the document but their edits are ignored. So are an editor's, on a page past the size
+   * limit; admins can still edit it, so that someone can cut it back down (a locked page nobody can trim would be stuck).
+   */
   isReadOnly(conn: Connection): boolean {
     const state = (conn as Connection<ConnState>).state;
-    return !state || !atLeast(state.role, 'editor');
+    return !state || !atLeast(state.role, 'editor') || (this.isOversize() && !atLeast(state.role, 'admin'));
   }
+
+  /**
+   * A page whose document passed the admin's size limit stops taking edits from editors (what's there is kept), and everyone is
+   * told, so nobody types into something that would not be saved. Admins can still edit it to trim it, and restoring an earlier
+   * version brings it back under the limit.
+   */
+  private oversize: boolean | undefined;
+  private limitCache: { at: number; bytes: number } | undefined;
+
+  private isOversize(): boolean {
+    if (this.oversize === undefined) {
+      this.ensureTables();
+      this.oversize = this.getKv('oversize') === '1';
+    }
+    return this.oversize;
+  }
+
+  private async pageLimit(): Promise<number> {
+    if (!this.limitCache || Date.now() - this.limitCache.at > 60_000) this.limitCache = { at: Date.now(), bytes: await maxPageBytes(this.env) };
+    return this.limitCache.bytes;
+  }
+
+  private oversizeNotice(): string {
+    return JSON.stringify({ type: 'oversize', over: this.isOversize(), limit: Number(this.getKv('oversize_limit') ?? 0) });
+  }
+
+  private async checkSize(bytes: number): Promise<void> {
+    const limit = await this.pageLimit();
+    const over = bytes > limit;
+    if (over === this.isOversize()) return;
+    this.oversize = over;
+    this.setKv('oversize', over ? '1' : '0');
+    this.setKv('oversize_limit', String(limit));
+    this.broadcastCustomMessage(this.oversizeNotice());
+  }
+
+  /** What the room has written down: the base copy, the updates since, and the document as of the last save. */
+  private persisted: { sv: Uint8Array; hash: string; baseBytes: number; updateBytes: number; updateRows: number } | undefined;
 
   async onLoad(): Promise<void> {
     this.ensureTables();
-    const rows = this.exec('SELECT data FROM doc_chunks ORDER BY i').toArray() as { data: ArrayBuffer }[];
-    if (rows.length === 0) return;
-    const state = new Uint8Array(rows.reduce((n, r) => n + r.data.byteLength, 0));
-    let off = 0;
-    for (const r of rows) {
-      state.set(new Uint8Array(r.data), off);
-      off += r.data.byteLength;
+    const base = this.exec('SELECT data FROM doc_chunks ORDER BY i').toArray() as { data: ArrayBuffer }[];
+    let baseBytes = 0;
+    if (base.length) {
+      const state = new Uint8Array(base.reduce((n, r) => n + r.data.byteLength, 0));
+      let off = 0;
+      for (const r of base) {
+        state.set(new Uint8Array(r.data), off);
+        off += r.data.byteLength;
+      }
+      baseBytes = state.byteLength;
+      Y.applyUpdate(this.document, state);
     }
-    Y.applyUpdate(this.document, state);
+    const updates = this.exec('SELECT data FROM doc_updates ORDER BY i').toArray() as { data: ArrayBuffer }[];
+    let updateBytes = 0;
+    for (const u of updates) {
+      updateBytes += u.data.byteLength;
+      Y.applyUpdate(this.document, new Uint8Array(u.data));
+    }
+    this.persisted = { sv: Y.encodeStateVector(this.document), hash: this.stateVector(), baseBytes, updateBytes, updateRows: updates.length };
   }
 
   async onSave(): Promise<void> {
@@ -201,21 +269,36 @@ export class PageRoom extends YServer<Env> {
   private async persist(force: boolean): Promise<void> {
     if (this.deleted) return; // a save still pending when the page was deleted must not bring it back
     this.ensureTables();
-    const sv = this.stateVector();
-    if (this.getKv('saved_sv') !== sv) {
-      const state = Y.encodeStateAsUpdate(this.document);
-      if (state.byteLength > MAX_STATE_BYTES) {
-        console.error('page state is too large to save', this.name, state.byteLength);
-        return;
-      }
-      this.ctx.storage.transactionSync(() => {
-        this.exec('DELETE FROM doc_chunks');
-        for (let i = 0, off = 0; off < state.byteLength; i++, off += CHUNK) {
-          this.exec('INSERT INTO doc_chunks (i, data) VALUES (?, ?)', i, state.subarray(off, off + CHUNK));
+    const saved = (this.persisted ??= { sv: new Uint8Array([0]), hash: '', baseBytes: 0, updateBytes: 0, updateRows: 0 });
+    const hash = this.stateVector();
+    if (saved.hash !== hash) {
+      // Only what changed since the last save is written: one small row, instead of the whole document again (which for a
+      // big page is many rows and megabytes each time). Every so often (and when the last person leaves) the pieces are
+      // merged back into one copy, so that loading a page never has to read a long list.
+      const update = Y.encodeStateAsUpdate(this.document, saved.sv);
+      const approx = saved.baseBytes + saved.updateBytes + update.byteLength; // an upper bound: updates repeat some of what the copy holds
+      if (approx > Math.min(await this.pageLimit(), MAX_STATE_BYTES)) {
+        // Near a limit the estimate isn't good enough (many small updates, or a page that has been cut back): measure the
+        // real document, and write it whole, which also merges the updates.
+        const state = Y.encodeStateAsUpdate(this.document);
+        await this.checkSize(state.byteLength);
+        if (state.byteLength > MAX_STATE_BYTES) {
+          console.error('page state is too large to save', this.name, state.byteLength);
+          return;
         }
-        this.exec('INSERT INTO kv (k, v) VALUES (?, ?) ON CONFLICT (k) DO UPDATE SET v = excluded.v', 'saved_sv', sv);
-      });
+        this.compact(state);
+      } else {
+        await this.checkSize(approx);
+        this.exec('INSERT INTO doc_updates (data) VALUES (?)', update);
+        saved.updateBytes += update.byteLength;
+        saved.updateRows++;
+        if (saved.updateRows >= COMPACT_ROWS || saved.updateBytes >= COMPACT_BYTES) this.compact();
+      }
+      saved.sv = Y.encodeStateVector(this.document);
+      saved.hash = hash;
     }
+    // The last person leaving: tidy up a long list of updates now, so the next load reads one copy.
+    if (force && saved.updateRows >= COMPACT_ON_LEAVE) this.compact();
     await this.reindex(force);
 
     // Automatic history: at most every 10 minutes, and only if something changed.
@@ -238,7 +321,8 @@ export class PageRoom extends YServer<Env> {
   private async reindex(force: boolean): Promise<void> {
     const title = this.title();
     const icon = String(this.document.getMap('meta').get('icon') ?? '').slice(0, 16);
-    const body = fragmentText(this.document.getXmlFragment(FRAGMENT));
+    const fullText = fragmentText(this.document.getXmlFragment(FRAGMENT));
+    const body = fullText.length > INDEX_TEXT_MAX ? fullText.slice(0, INDEX_TEXT_MAX) : fullText;
     const headSig = hashText(`${title}\u0000${icon}`);
     const sig = hashText(`${headSig}\u0000${body}`);
     const used = fileIdsIn(this.document.getXmlFragment(FRAGMENT).toString());
@@ -269,6 +353,20 @@ export class PageRoom extends YServer<Env> {
     if (refsChanged) {
       await syncFileRefs(this.env, this.name, used).then(() => this.setKv('refs_sig', refsSig), (err) => console.error('file refs failed', err));
     }
+  }
+
+  /** Writes the whole document as the base copy and drops the updates it now contains. Returns the document's size in bytes. */
+  private compact(known?: Uint8Array): number {
+    const state = known ?? Y.encodeStateAsUpdate(this.document);
+    this.ctx.storage.transactionSync(() => {
+      this.exec('DELETE FROM doc_chunks');
+      for (let i = 0, off = 0; off < state.byteLength; i++, off += CHUNK) {
+        this.exec('INSERT INTO doc_chunks (i, data) VALUES (?, ?)', i, state.subarray(off, off + CHUNK));
+      }
+      this.exec('DELETE FROM doc_updates');
+    });
+    if (this.persisted) Object.assign(this.persisted, { baseBytes: state.byteLength, updateBytes: 0, updateRows: 0, sv: Y.encodeStateVector(this.document) });
+    return state.byteLength;
   }
 
   private title(): string {
@@ -428,7 +526,19 @@ export class PageRoom extends YServer<Env> {
         // Keep what's being replaced, so a restore can be undone.
         await this.snapshot('before-restore', body.by ?? null, body.userId ?? null);
         // Applied as ordinary edits, so everyone on the page sees the restore live.
-        this.unstable_replaceDocument(snapshot, (key) => (key === FRAGMENT ? 'XmlFragment' : 'Map'));
+        const saved = new Y.Doc();
+        Y.applyUpdate(saved, snapshot);
+        if (saved.share.size === 0) {
+          // A version of a page that was still empty has no content to put back, and the replace helper can't cope with
+          // that: restoring it means clearing the page.
+          this.document.transact(() => {
+            const body = this.document.getXmlFragment(FRAGMENT);
+            body.delete(0, body.length);
+            this.document.getMap('meta').clear();
+            this.document.getMap('layouts').clear();
+          });
+        } else this.unstable_replaceDocument(snapshot, (key) => (key === FRAGMENT ? 'XmlFragment' : 'Map'));
+        saved.destroy();
         await this.persist(true);
         return new Response(null, { status: 204 });
       }

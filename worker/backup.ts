@@ -5,7 +5,7 @@ import { HttpError, json, newId, readJson, str } from './http.js';
 import { exportRoom, loadRoom } from './rooms.js';
 import { deriveId, mapFileUrls } from './rewrite.js';
 import { usableStorage } from './settings.js';
-import { checkPageLimit, checkQuota, checkWorkspaceQuota, defaultLimits, fileKey, historyKey, storageById, WebDav, type StorageRow } from './storage.js';
+import { checkPageLimit, checkQuota, checkWorkspaceQuota, defaultLimits, fileKey, historyKey, storageById, WebDav, workspaceLimits, workspaceUsage, type StorageRow } from './storage.js';
 
 /**
  * Moving a workspace between storages, and backing it up to one and restoring it from one.
@@ -402,7 +402,7 @@ export async function importStep(req: Request, env: Env, u: User | null): Promis
     const now = Date.now();
     const limits = await defaultLimits(env);
     const stmts = [
-      env.DB.prepare('INSERT INTO workspaces (id, name, created_at, storage_limit, max_pages) VALUES (?, ?, ?, ?, ?)').bind(wid, name, now, limits.storageLimit, limits.maxPages),
+      env.DB.prepare('INSERT INTO workspaces (id, name, created_at, storage_limit, max_pages, max_comments) VALUES (?, ?, ?, ?, ?, ?)').bind(wid, name, now, limits.storageLimit, limits.maxPages, limits.maxComments),
       env.DB.prepare("INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, 'owner')").bind(wid, user.id),
       env.DB.prepare('INSERT INTO workspace_storage_bindings (workspace_id, storage_id, created_at, granted_user_id) VALUES (?, ?, ?, ?)').bind(
         wid,
@@ -476,7 +476,14 @@ export async function importStep(req: Request, env: Env, u: User | null): Promis
       .all<{ id: string }>();
     const known = new Set(authors.results.map((a) => a.id));
     const stmts = [];
+    // a workspace with a comment limit takes only as many as fit; the rest are listed as not restored
+    const cap = (await workspaceLimits(env, wid)).maxComments;
+    const room = cap == null ? Infinity : Math.max(0, cap - (await workspaceUsage(env, wid)).comments);
     for (const r of rows) {
+      if (stmts.length >= room) {
+        fail('comment', r.id, 'the workspace comment limit was reached');
+        continue;
+      }
       try {
         const fileMap = new Map<string, string>();
         for (const id of [...String(r.body ?? '').matchAll(/\/api\/files\/([0-9a-f-]{36})\//g), ...String(r.quote_pdf_url ?? '').matchAll(/\/api\/files\/([0-9a-f-]{36})\//g)]) {

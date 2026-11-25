@@ -25,6 +25,8 @@ interface Props {
   onDelete: (page: Page) => void;
   onMove: (page: Page, parentId: string | null, position?: number) => void;
   onUpload: (page: Page) => void;
+  /** Called with the pages that are unfolded but whose children haven't been loaded (a big workspace loads its tree a level at a time). */
+  onNeedChildren?: (ids: string[]) => void;
 }
 
 /** Which pages are expanded, per project, kept across reloads. */
@@ -64,7 +66,7 @@ export function descendants(pages: Page[], id: string): Set<string> {
  * to move or reorder (top or bottom edge = before or after, middle = inside),
  * and a ⋯ menu with the same actions for touch screens.
  */
-export function PageTree({ projectId, pages, canEdit, activeId, linkFor, onOpen, onCreate, onDelete, onMove, onUpload }: Props) {
+export function PageTree({ projectId, pages, canEdit, activeId, linkFor, onOpen, onCreate, onDelete, onMove, onUpload, onNeedChildren }: Props) {
   const [open, setOpen] = useExpanded(projectId);
   const [drag, setDrag] = useState<string | null>(null);
   const [over, setOver] = useState<{ id: string; zone: Zone } | null>(null);
@@ -79,6 +81,14 @@ export function PageTree({ projectId, pages, canEdit, activeId, linkFor, onOpen,
     }
     return m;
   }, [pages]);
+
+  // Unfolded pages whose children aren't loaded yet: ask for them.
+  useEffect(() => {
+    if (!onNeedChildren) return;
+    const need = pages.filter((p) => open.has(p.id) && p.has_children && !(children.get(p.id)?.length)).map((p) => p.id);
+    if (need.length) onNeedChildren(need);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pages, open]);
 
   // Unfold the way to the open page.
   useEffect(() => {
@@ -129,12 +139,13 @@ export function PageTree({ projectId, pages, canEdit, activeId, linkFor, onOpen,
   const rows = (parentId: string | null, depth: number): React.ReactNode =>
     (children.get(parentId) ?? []).map((p) => {
       const kids = children.get(p.id) ?? [];
+      const expandable = kids.length > 0 || !!p.has_children;
       const isOpen = open.has(p.id);
       const cls = ['tree-row', p.id === activeId && 'active', p.id === drag && 'dragging', over?.id === p.id && `drop-${over.zone}`]
         .filter(Boolean)
         .join(' ');
       return (
-        <div key={p.id} role="treeitem" aria-expanded={kids.length ? isOpen : undefined} aria-selected={p.id === activeId}>
+        <div key={p.id} role="treeitem" aria-expanded={expandable ? isOpen : undefined} aria-selected={p.id === activeId}>
           <div
             className={cls}
             style={{ paddingLeft: 4 + depth * 16 }}
@@ -157,10 +168,10 @@ export function PageTree({ projectId, pages, canEdit, activeId, linkFor, onOpen,
             data-page-id={p.id}
           >
             <button
-              className={`tree-chevron${isOpen ? ' open' : ''}${kids.length ? '' : ' empty'}`}
+              className={`tree-chevron${isOpen ? ' open' : ''}${expandable ? '' : ' empty'}`}
               aria-label={isOpen ? 'Collapse' : 'Expand'}
-              onClick={(e) => (e.stopPropagation(), kids.length && toggle(p.id))}
-              tabIndex={kids.length ? 0 : -1}
+              onClick={(e) => (e.stopPropagation(), expandable && toggle(p.id))}
+              tabIndex={expandable ? 0 : -1}
             >
               <IconChevronRight size={14} />
             </button>

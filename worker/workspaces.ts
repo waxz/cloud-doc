@@ -1,5 +1,5 @@
 import { isRole, type Role, requireProject, requireWorkspace, type WorkspaceRole, visibleProjects } from './access.js';
-import { requireAdmin, requireUser, type User } from './auth.js';
+import { getAppSetting, requireAdmin, requireUser, type User } from './auth.js';
 import type { Env } from './env.js';
 import { HttpError, json, newId, noContent, readJson, str } from './http.js';
 import { deletePageTree } from './pages.js';
@@ -32,7 +32,7 @@ export async function createWorkspace(req: Request, env: Env, u: User | null): P
   const now = Date.now();
   const limits = await defaultLimits(env); // what the admin has set for new workspaces (a playground, say)
   await env.DB.batch([
-    env.DB.prepare('INSERT INTO workspaces (id, name, created_at, storage_limit, max_pages) VALUES (?, ?, ?, ?, ?)').bind(id, name, now, limits.storageLimit, limits.maxPages),
+    env.DB.prepare('INSERT INTO workspaces (id, name, created_at, storage_limit, max_pages, max_comments) VALUES (?, ?, ?, ?, ?, ?)').bind(id, name, now, limits.storageLimit, limits.maxPages, limits.maxComments),
     env.DB.prepare("INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, 'owner')").bind(id, user.id),
     env.DB.prepare('INSERT INTO workspace_storage_bindings (workspace_id, storage_id, created_at, granted_user_id) VALUES (?, ?, ?, ?)').bind(
       id,
@@ -256,24 +256,58 @@ export async function listProjects(env: Env, u: User | null, wid: string): Promi
 }
 
 /**
- * Every page of every project the caller can see, grouped by project: the sidebar's whole
- * tree in one request, instead of one request per project.
+ * The sidebar's page tree in one request. For a workspace with up to `tree_lazy_over` pages (default 1500) that is every
+ * page. Past that it is only the top-level pages plus the children of the pages the caller has opened (`open`, a comma list;
+ * `focus`, the page being read, opens the way down to it), each flagged `has_children`, and `partial` says so: the browser
+ * asks again with more ids as the person unfolds the tree.
  */
-export async function listWorkspacePages(env: Env, u: User | null, wid: string): Promise<Response> {
+export async function listWorkspacePages(env: Env, u: User | null, wid: string, url?: URL): Promise<Response> {
   const projects = await visibleProjects(env, requireUser(u), wid);
   const pagesByProject: Record<string, unknown[]> = Object.fromEntries(projects.map((p) => [p.id, []]));
+  let partial = false;
   if (projects.length) {
-    const { results } = await env.DB.prepare(
-      `SELECT id, project_id, parent_id, title, icon, position, updated_at FROM pages
-       WHERE project_id IN (SELECT id FROM projects WHERE workspace_id = ?) ORDER BY position`
-    )
-      .bind(wid)
-      .all<{ project_id: string }>();
+    const visible = JSON.stringify(projects.map((p) => p.id));
+    const threshold = Number(await getAppSetting(env, 'tree_lazy_over')) || 1500;
+    const total = (await env.DB.prepare('SELECT COUNT(*) AS n FROM pages WHERE project_id IN (SELECT value FROM json_each(?))').bind(visible).first<{ n: number }>())?.n ?? 0;
+    let results: { project_id: string }[];
+    if (total <= threshold) {
+      ({ results } = await env.DB.prepare(
+        `SELECT id, project_id, parent_id, title, icon, position, updated_at FROM pages
+         WHERE project_id IN (SELECT value FROM json_each(?)) ORDER BY position`
+      )
+        .bind(visible)
+        .all<{ project_id: string }>());
+    } else {
+      partial = true;
+      const open = new Set((url?.searchParams.get('open') ?? '').split(',').filter((x) => /^[\w-]{1,80}$/.test(x)).slice(0, 200));
+      const focus = url?.searchParams.get('focus') ?? '';
+      if (/^[\w-]{1,80}$/.test(focus)) {
+        const { results: up } = await env.DB.prepare(
+          `WITH RECURSIVE up(id, parent_id) AS (
+             SELECT id, parent_id FROM pages WHERE id = ?1
+             UNION ALL SELECT p.id, p.parent_id FROM pages p JOIN up ON p.id = up.parent_id)
+           SELECT id FROM up WHERE id != ?1 LIMIT 50`
+        )
+          .bind(focus)
+          .all<{ id: string }>();
+        for (const row of up) open.add(row.id);
+      }
+      ({ results } = await env.DB.prepare(
+        `SELECT id, project_id, parent_id, title, icon, position, updated_at,
+                EXISTS (SELECT 1 FROM pages c WHERE c.parent_id = pages.id) AS has_children
+         FROM pages
+         WHERE project_id IN (SELECT value FROM json_each(?1))
+           AND (parent_id IS NULL OR parent_id IN (SELECT value FROM json_each(?2)))
+         ORDER BY position LIMIT 5000`
+      )
+        .bind(visible, JSON.stringify([...open]))
+        .all<{ project_id: string }>());
+    }
     for (const page of results) pagesByProject[page.project_id]?.push(page);
   }
   // Whether anyone else could be changing the tree: a workspace of one has nothing to poll for.
   const people = await env.DB.prepare('SELECT COUNT(*) AS n FROM workspace_members WHERE workspace_id = ?').bind(wid).first<{ n: number }>();
-  return json({ projects, pages: pagesByProject, members: people?.n ?? 1 });
+  return json({ projects, pages: pagesByProject, members: people?.n ?? 1, partial });
 }
 
 const parseDefaultRole = (v: unknown): Role | null => {
@@ -390,12 +424,13 @@ const limitValue = (v: unknown, what: string): number | null => {
 export async function setWorkspaceLimits(req: Request, env: Env, u: User | null, wid: string): Promise<Response> {
   requireAdmin(u);
   if (!(await env.DB.prepare('SELECT 1 FROM workspaces WHERE id = ?').bind(wid).first())) throw new HttpError(404, 'no such workspace');
-  const b = await readJson<{ storageLimit?: unknown; maxPages?: unknown }>(req);
+  const b = await readJson<{ storageLimit?: unknown; maxPages?: unknown; maxComments?: unknown }>(req);
   const cur = await workspaceLimits(env, wid);
   const next = {
     storageLimit: 'storageLimit' in b ? limitValue(b.storageLimit, 'the storage limit') : cur.storageLimit,
     maxPages: 'maxPages' in b ? limitValue(b.maxPages, 'the page limit') : cur.maxPages,
+    maxComments: 'maxComments' in b ? limitValue(b.maxComments, 'the comment limit') : cur.maxComments,
   };
-  await env.DB.prepare('UPDATE workspaces SET storage_limit = ?, max_pages = ? WHERE id = ?').bind(next.storageLimit, next.maxPages, wid).run();
+  await env.DB.prepare('UPDATE workspaces SET storage_limit = ?, max_pages = ?, max_comments = ? WHERE id = ?').bind(next.storageLimit, next.maxPages, next.maxComments, wid).run();
   return json(next);
 }

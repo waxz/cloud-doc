@@ -44,6 +44,8 @@ export interface Page {
   icon: string;
   position: number;
   updated_at: number;
+  /** Sent when the tree is loaded a level at a time: whether the page has children that are not loaded yet. */
+  has_children?: number;
 }
 export interface FileInfo {
   id: string;
@@ -99,6 +101,11 @@ export interface InstanceSettings {
   /** Limits every new workspace starts with (null = none). */
   defaultStorageLimit: number | null;
   defaultMaxPages: number | null;
+  defaultMaxComments: number | null;
+  /** The most one page's document may weigh before it is locked (default 10 MB). */
+  maxPageBytes: number;
+  /** A workspace with more pages than this loads its tree a level at a time. */
+  treeLazyOver: number;
   /** The most one uploaded file may weigh on this instance. */
   maxFileBytes: number | null;
   /** Requests one person may make per minute (default 600) and per hour; 0 = no limit. */
@@ -118,6 +125,8 @@ export interface WorkspaceUsage {
   pages: number;
   storageLimit: number | null;
   maxPages: number | null;
+  maxComments: number | null;
+  comments: number;
   maxFileBytes: number | null;
 }
 export interface StorageInput {
@@ -382,6 +391,9 @@ export const api = {
       adminEmail: string;
       defaultStorageLimit: number | null;
       defaultMaxPages: number | null;
+      defaultMaxComments: number | null;
+      maxPageBytes: number | null;
+      treeLazyOver: number | null;
       maxFileBytes: number | null;
       ratePerMinute: number | null;
       ratePerHour: number | null;
@@ -391,8 +403,8 @@ export const api = {
     }>
   ) => call<InstanceSettings>('PUT', '/api/admin/settings', patch),
   workspaceUsage: (wid: string) => call<WorkspaceUsage>('GET', `/api/workspaces/${wid}/usage`),
-  setWorkspaceLimits: (wid: string, limits: { storageLimit?: number | null; maxPages?: number | null }) =>
-    call<{ storageLimit: number | null; maxPages: number | null }>('PUT', `/api/workspaces/${wid}/limits`, limits),
+  setWorkspaceLimits: (wid: string, limits: { storageLimit?: number | null; maxPages?: number | null; maxComments?: number | null }) =>
+    call<{ storageLimit: number | null; maxPages: number | null; maxComments: number | null }>('PUT', `/api/workspaces/${wid}/limits`, limits),
   registration: (token: string) => call<{ email: string | null; workspace: string | null; storage: string | null }>('GET', `/api/register/${enc(token)}`),
   signup: (email: string, name: string, password: string, token?: string) =>
     afterWrite('', call<Me>('POST', '/api/auth/signup', { email, name, password, token })),
@@ -414,9 +426,14 @@ export const api = {
   workspaceStorages: (wid: string) => call<WorkspaceStorageInfo>('GET', `/api/workspaces/${wid}/storages`),
   setWorkspaceStorages: (wid: string, storageIds: string[]) =>
     call<void>('PUT', `/api/workspaces/${wid}/storages`, { storageIds }),
-  search: (wid: string, q: string) => call<SearchHit[]>('GET', `/api/workspaces/${wid}/search?q=${enc(q)}`),
+  search: (wid: string, q: string, titles = false) => call<SearchHit[]>('GET', `/api/workspaces/${wid}/search?q=${enc(q)}${titles ? '&titles=1' : ''}`),
 
-  tree: (wid: string) => call<{ projects: Project[]; pages: Record<string, Page[]>; members: number }>('GET', `/api/workspaces/${wid}/tree`),
+  /** The page tree. For a big workspace `partial` is true: only the top level plus the children of `open`, and the way down to `focus`. */
+  tree: (wid: string, open: string[] = [], focus?: string) =>
+    call<{ projects: Project[]; pages: Record<string, Page[]>; members: number; partial: boolean }>(
+      'GET',
+      `/api/workspaces/${wid}/tree${open.length || focus ? `?${new URLSearchParams({ ...(open.length ? { open: open.join(',') } : {}), ...(focus ? { focus } : {}) })}` : ''}`
+    ),
   projects: (wid: string) => call<Project[]>('GET', `/api/workspaces/${wid}/projects`),
   createProject: (wid: string, name: string, defaultRole: Role | null, readOnly = false) =>
     call<Project>('POST', `/api/workspaces/${wid}/projects`, { name, defaultRole, readOnly }),

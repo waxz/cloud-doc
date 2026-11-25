@@ -779,7 +779,7 @@ console.log('✓ share links: public read, subpages, commenter for outsiders, re
   await bob.expect(403, 'GET', `/api/workspaces/${lim.id}/usage`);
   await alice.expect(400, 'PUT', `/api/workspaces/${lim.id}/limits`, { storageLimit: -5 });
   await alice.expect(400, 'PUT', `/api/workspaces/${lim.id}/limits`, { maxPages: 'lots' });
-  assert.deepEqual(await alice.ok('PUT', `/api/workspaces/${lim.id}/limits`, { storageLimit: 5000, maxPages: 4 }), { storageLimit: 5000, maxPages: 4 });
+  assert.deepEqual(await alice.ok('PUT', `/api/workspaces/${lim.id}/limits`, { storageLimit: 5000, maxPages: 4 }), { storageLimit: 5000, maxPages: 4, maxComments: null });
   assert.equal((await usage()).storageLimit, 5000);
 
   // storage: two 2000-byte files fit, a third doesn't, and nothing is left behind by the refusal
@@ -984,6 +984,119 @@ console.log('✓ share links: public read, subpages, commenter for outsiders, re
   const closed = await alice.ok('GET', settings);
   assert.deepEqual([closed.openRegistration, closed.playgroundWorkspace], [false, null]);
   console.log('✓ open registration: switch, playground workspace, members only, cap, per-address limit, off again');
+}
+
+// --- room for many pages: comment limit, bounded search text, oversize pages, lazy page tree ---
+{
+  const settings = '/api/admin/settings';
+  const wsx = await alice.ok('POST', '/api/workspaces', { name: `Scale ${run}`, storageId: home.id });
+  const projx = (await alice.ok('GET', `/api/workspaces/${wsx.id}/projects`))[0];
+  const usage = () => alice.ok('GET', `/api/workspaces/${wsx.id}/usage`);
+
+  // comments: capped per workspace, also against a burst
+  const cpage = await alice.ok('POST', `/api/projects/${projx.id}/pages`, {});
+  await alice.ok('PUT', `/api/workspaces/${wsx.id}/limits`, { maxComments: 5 });
+  const made = await Promise.all(Array.from({ length: 12 }, (_, i) => alice.call('POST', `/api/pages/${cpage.id}/comments`, { body: `burst ${i}` })));
+  assert.ok(made.every((r) => r.status === 201 || r.status === 403));
+  assert.equal((await usage()).comments, 5, 'exactly as many comments as the limit, even when posted at once');
+  assert.equal((await alice.call('POST', `/api/pages/${cpage.id}/comments`, { body: 'one too many' })).status, 403);
+  await alice.ok('PUT', `/api/workspaces/${wsx.id}/limits`, { maxComments: null });
+  assert.equal((await alice.call('POST', `/api/pages/${cpage.id}/comments`, { body: 'fine again' })).status, 201);
+  assert.equal((await alice.ok('PUT', settings, { defaultMaxComments: 40 })).defaultMaxComments, 40);
+  const withDefault = await alice.ok('POST', '/api/workspaces', { name: `Defaulted ${run}`, storageId: home.id });
+  assert.equal((await alice.ok('GET', `/api/workspaces/${withDefault.id}/usage`)).maxComments, 40, 'new workspaces start with the default comment limit');
+  await alice.ok('PUT', settings, { defaultMaxComments: null });
+  await alice.ok('DELETE', `/api/workspaces/${withDefault.id}`);
+
+  // search text: only the first 100 KB of a page is indexed
+  const big = await alice.ok('POST', `/api/projects/${projx.id}/pages`, {});
+  const live = await alice.connect(big.id);
+  write(live.doc, `findable${run}early`);
+  for (let i = 0; i < 130; i++) write(live.doc, `${'lorem ipsum dolor '.repeat(55)}`);
+  write(live.doc, `unreachable${run}late`);
+  let early = [];
+  for (let i = 0; i < 20 && !early.length; i++) {
+    await sleep(1000);
+    early = await alice.ok('GET', `/api/workspaces/${wsx.id}/search?q=findable${run}early`);
+  }
+  assert.equal(early.length, 1, 'text near the top of a long page is searchable');
+  assert.equal((await alice.ok('GET', `/api/workspaces/${wsx.id}/search?q=unreachable${run}late`)).length, 0, 'text past the first 100 KB is not indexed');
+  live.close();
+
+  // a page past the size limit stops taking edits from editors, and everyone is told; admins can still trim it, and
+  // restoring an earlier version lifts the lock
+  await alice.ok('POST', `/api/workspaces/${wsx.id}/members`, { email: bob.email, role: 'member' });
+  assert.equal((await alice.ok('PUT', settings, { maxPageBytes: 20000 })).maxPageBytes, 20000);
+  const fat = await alice.ok('POST', `/api/projects/${projx.id}/pages`, {});
+  const before = await alice.ok('POST', `/api/pages/${fat.id}/versions`);
+  const notices = [];
+  const watch = (p) => p.on('custom-message', (m) => { const n = JSON.parse(m); if (n.type === 'oversize') notices.push(n.over); });
+  const admin = await alice.connect(fat.id, watch);   // the workspace owner: an admin of every page
+  const editor = await bob.connect(fat.id);            // a member with edit access
+  write(admin.doc, 'x'.repeat(30000));
+  for (let i = 0; i < 20 && !notices.includes(true); i++) await sleep(500);
+  assert.ok(notices.includes(true), 'the room says the page is too big');
+  const attempt = await bob.connect(fat.id); // a client typing into the locked page: its edits are dropped (the real editor locks itself on the notice)
+  write(attempt.doc, 'edit by an editor after the limit');
+  await sleep(800);
+  assert.doesNotMatch(text(admin.doc), /edit by an editor/, 'an editor can no longer add to it');
+  attempt.close();
+  write(admin.doc, 'trim by an admin');
+  await sleep(1000);
+  assert.match(text(editor.doc), /trim by an admin/, 'but an admin still can, so it can be cut down');
+  const noticesNew = [];
+  const late = await bob.connect(fat.id, (p) => p.on('custom-message', (m) => { const n = JSON.parse(m); if (n.type === 'oversize') noticesNew.push(n); }));
+  await sleep(700);
+  assert.ok(noticesNew.length && noticesNew[0].over && noticesNew[0].limit === 20000, 'someone arriving later is told at once');
+  await alice.ok('POST', `/api/pages/${fat.id}/versions/${before.id}/restore`);
+  for (let i = 0; i < 20 && !notices.includes(false); i++) await sleep(500);
+  assert.ok(notices.includes(false), 'restoring an earlier version lifts the lock');
+  const again = await bob.connect(fat.id);
+  write(again.doc, 'edit after the restore');
+  await sleep(1200);
+  assert.match(text(admin.doc), /edit after the restore/, 'and editors can edit again');
+  admin.close(); editor.close(); late.close(); again.close();
+  await alice.ok('PUT', settings, { maxPageBytes: null });
+
+  // lazy page tree: past the threshold only the top level is sent, with the children of what is open
+  assert.equal((await alice.ok('PUT', settings, { treeLazyOver: 6 })).treeLazyOver, 6);
+  const tproj = await alice.ok('POST', `/api/workspaces/${wsx.id}/projects`, { name: 'Tree' });
+  const roots = [];
+  for (let i = 0; i < 3; i++) roots.push(await alice.ok('POST', `/api/projects/${tproj.id}/pages`, { parentId: null }));
+  const kids = [];
+  for (let i = 0; i < 4; i++) kids.push(await alice.ok('POST', `/api/projects/${tproj.id}/pages`, { parentId: roots[0].id }));
+  const grand = await alice.ok('POST', `/api/projects/${tproj.id}/pages`, { parentId: kids[1].id });
+  const treeOf = (qs = '') => alice.ok('GET', `/api/workspaces/${wsx.id}/tree${qs}`);
+  const top = await treeOf();
+  const inTree = (t) => t.pages[tproj.id];
+  assert.equal(top.partial, true, 'a big workspace sends its tree in parts');
+  assert.deepEqual(inTree(top).filter((p) => p.parent_id).length, 0, 'at first only the top level');
+  assert.equal(inTree(top).find((p) => p.id === roots[0].id).has_children, 1, 'each page says whether it has children');
+  assert.equal(inTree(top).find((p) => p.id === roots[1].id).has_children, 0);
+  const opened = await treeOf(`?open=${roots[0].id}`);
+  assert.deepEqual(inTree(opened).filter((p) => p.parent_id === roots[0].id).length, 4, 'opening a page brings its children');
+  assert.equal(inTree(opened).some((p) => p.id === grand.id), false);
+  const toGrand = await treeOf(`?focus=${grand.id}`);
+  assert.ok([roots[0].id, kids[1].id].every((id) => inTree(toGrand).some((p) => p.id === id)) && inTree(toGrand).filter((p) => p.parent_id === kids[1].id).length === 1, 'the page being read has its way down opened');
+  // titles, searched on the server
+  const t1 = await alice.connect(roots[2].id);
+  t1.doc.getMap('meta').set('title', `100% Alpha ${run}`);
+  const t2 = await alice.connect(kids[3].id);
+  t2.doc.getMap('meta').set('title', `Alphabet soup ${run}`);
+  let titleHits = [];
+  for (let i = 0; i < 20 && titleHits.length < 2; i++) {
+    await sleep(700);
+    titleHits = await alice.ok('GET', `/api/workspaces/${wsx.id}/search?titles=1&q=${encodeURIComponent(`alpha`)}`);
+  }
+  assert.equal(titleHits.filter((h) => h.title.includes(run)).length, 2, 'titles are found anywhere in the title');
+  const pct = await alice.ok('GET', `/api/workspaces/${wsx.id}/search?titles=1&q=${encodeURIComponent('100%')}`);
+  assert.deepEqual(pct.map((h) => h.title), [`100% Alpha ${run}`], 'a % in the search is just a character');
+  assert.equal((await alice.ok('GET', `/api/workspaces/${wsx.id}/search?titles=1&q=${encodeURIComponent('%')}`)).filter((h) => h.title.includes(run)).length, 1, 'and so is a bare %');
+  t1.close(); t2.close();
+  await alice.ok('PUT', settings, { treeLazyOver: null });
+  assert.equal((await treeOf()).partial, false, 'a small workspace sends everything');
+  await alice.ok('DELETE', `/api/workspaces/${wsx.id}`);
+  console.log('✓ room for many pages: comment limit, bounded search text, oversize pages read-only, lazy tree, title search');
 }
 
 // --- admin contact email, and recovery mode ---

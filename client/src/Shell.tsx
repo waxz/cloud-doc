@@ -147,10 +147,20 @@ export function Shell({ me, workspace, pageId, commentId, dark, onMeChanged, onS
   // poll that finds nothing new doesn't re-render the sidebar.
   const lastTree = useRef('');
   const members = useRef(2);
+  // A big workspace sends its tree a level at a time: these are the pages whose children have been asked for.
+  const [partial, setPartial] = useState(false);
+  const wanted = useRef(new Set<string>());
+  const pageIdRef = useRef(pageId);
+  pageIdRef.current = pageId;
+  useEffect(() => {
+    wanted.current = new Set();
+    lastTree.current = '';
+  }, [wid]);
   const refresh = useCallback(async () => {
     try {
-      const tree = await api.tree(wid);
+      const tree = await api.tree(wid, [...wanted.current], pageIdRef.current);
       members.current = tree.members;
+      setPartial(tree.partial);
       const text = JSON.stringify(tree);
       if (text === lastTree.current) return;
       lastTree.current = text;
@@ -160,6 +170,16 @@ export function Shell({ me, workspace, pageId, commentId, dark, onMeChanged, onS
       onError(errorText(e));
     }
   }, [wid, onError]);
+
+  const needChildren = useCallback(
+    (ids: string[]) => {
+      const fresh = ids.filter((id) => !wanted.current.has(id));
+      if (!fresh.length) return;
+      fresh.forEach((id) => wanted.current.add(id));
+      void refresh();
+    },
+    [refresh]
+  );
 
   useEffect(() => {
     refresh();
@@ -260,10 +280,24 @@ export function Shell({ me, workspace, pageId, commentId, dark, onMeChanged, onS
     return favorites.map((id) => all.find((p) => p.id === id)).filter((p): p is Page => !!p);
   }, [favorites, pages]);
   const projectName = useMemo(() => Object.fromEntries(projects.map((p) => [p.id, p.name])), [projects]);
+  // A workspace too big to hold whole in the browser looks titles up on the server instead.
+  const [serverTitleHits, setServerTitleHits] = useState<SearchHit[] | null>(null);
+  useEffect(() => {
+    if (!partial || searchMode !== 'title' || !query.trim()) return setServerTitleHits(null);
+    const t = setTimeout(() => api.search(wid, query, true).then(setServerTitleHits, (e) => onError(errorText(e))), 200);
+    return () => clearTimeout(t);
+  }, [partial, searchMode, query, wid, onError]);
+
   // Title search: matching pages across the workspace, each with the pages above it, found without asking the server.
   const titleHits = useMemo(() => {
     const q = query.trim().toLocaleLowerCase();
     if (searchMode !== 'title' || !q) return null;
+    if (partial) {
+      return (serverTitleHits ?? []).map((h) => ({
+        page: { id: h.id, project_id: h.project_id, parent_id: null, title: h.title, icon: (h as { icon?: string }).icon ?? '', position: 0, updated_at: 0 } as Page,
+        trail: projectName[h.project_id] ?? '',
+      }));
+    }
     const all = Object.values(pages).flat();
     const byId = new Map(all.map((p) => [p.id, p]));
     const trail = (p: Page): string => {
@@ -272,7 +306,7 @@ export function Shell({ me, workspace, pageId, commentId, dark, onMeChanged, onS
       return [projectName[p.project_id] ?? '', ...names].filter(Boolean).join(' / ');
     };
     return all.filter((p) => (p.title || 'Untitled').toLocaleLowerCase().includes(q)).slice(0, 50).map((p) => ({ page: p, trail: trail(p) }));
-  }, [query, searchMode, pages, projectName]);
+  }, [query, searchMode, pages, projectName, partial, serverTitleHits]);
   const linkFor = useCallback((id: string) => href.workspace(wid, id), [wid]);
   const showSidebar = (
     <Tooltip label="Show sidebar (Ctrl+\)">
@@ -462,6 +496,7 @@ export function Shell({ me, workspace, pageId, commentId, dark, onMeChanged, onS
                     uploadTarget.current = p.id;
                     fileInput.current?.click();
                   }}
+                  onNeedChildren={partial ? needChildren : undefined}
                 />}
               </div>
             ))}

@@ -354,6 +354,7 @@ export function PageView({ pageId, me, dark, leading, trailing, linkFor, onTitle
           pageId={pageId}
           me={person}
           canEdit={atLeast(info.role, 'editor')}
+          canAdmin={atLeast(info.role, 'admin')}
           canComment={canComment}
           dark={dark}
           onTitle={handleTitle}

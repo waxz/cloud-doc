@@ -13,7 +13,7 @@ import {
   useComponentsContext,
   useCreateBlockNote,
 } from '@blocknote/react';
-import { ActionIcon, Avatar, Button, Checkbox, Group, Loader, Popover, SegmentedControl, SimpleGrid, Stack, Text, Tooltip, UnstyledButton } from '@mantine/core';
+import { ActionIcon, Alert, Avatar, Button, Checkbox, Group, Loader, Popover, SegmentedControl, SimpleGrid, Stack, Text, Tooltip, UnstyledButton } from '@mantine/core';
 import { IconFileTypePdf, IconMessagePlus, IconMoodSmile } from '@tabler/icons-react';
 import { useMediaQuery } from '@mantine/hooks';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -24,7 +24,7 @@ import { api, TAB_ID, type Comment } from './api';
 import { attachLiveMode } from './liveMode';
 import { IconArticle, IconLayoutColumns } from '@tabler/icons-react';
 import { COMMENT_COLORS, HIGHLIGHT_SHAPES, PageContext, type HighlightShape, schema, type Schema } from './blocks';
-import { errorText, highlightPositions, pollWhenVisible, takeFind } from './util';
+import { errorText, formatBytes, highlightPositions, pollWhenVisible, takeFind } from './util';
 
 export interface Person {
   accountId?: string;
@@ -38,6 +38,8 @@ interface Props {
   pageId: string;
   me: Person;
   canEdit: boolean;
+  /** An admin of the page: can still edit it when it is past the size limit, to cut it down. */
+  canAdmin?: boolean;
   /** Commenters get a "Comment" button on selected text. */
   canComment: boolean;
   dark: boolean;
@@ -293,7 +295,7 @@ function snapshotProvider(doc: Y.Doc, pageId: string): YProvider {
  * title and emoji are fields in the same document, so they sync like the
  * body. Mount with `key={pageId}` so each page gets a fresh connection.
  */
-export function PageEditor({ pageId, me, canEdit, canComment, dark, onTitle, onIcon, onMessage, onEditor, onComment, onError }: Props) {
+export function PageEditor({ pageId, me, canEdit, canAdmin, canComment, dark, onTitle, onIcon, onMessage, onEditor, onComment, onError }: Props) {
   // A guest (not signed in) reads a snapshot fetched over HTTP and opens no live connection, so they send
   // nothing to the room and never show up in anyone's list of who is on the page.
   const guest = !me.accountId;
@@ -313,6 +315,8 @@ export function PageEditor({ pageId, me, canEdit, canComment, dark, onTitle, onI
   const [icon, setIcon] = useState('');
   // How the page is typeset ('article': a serif reading layout), kept in the document so everyone sees it.
   const [layout, setLayout] = useState('');
+  // Set when the room says the page is past the size limit (editors are locked out of it, admins can trim it).
+  const [oversize, setOversize] = useState<{ limit: number } | null>(null);
   const [layoutOpen, setLayoutOpen] = useState(false);
   const [synced, setSynced] = useState(false);
   const syncedRef = useRef(false);
@@ -411,8 +415,9 @@ export function PageEditor({ pageId, me, canEdit, canComment, dark, onTitle, onI
     };
     const onCustom = (message: string) => {
       try {
-        const notice = JSON.parse(message) as { type: string; live?: boolean; from?: string };
+        const notice = JSON.parse(message) as { type: string; live?: boolean; from?: string; over?: boolean; limit?: number };
         if (notice.type === 'mode') return liveMode.setLive(!!notice.live);
+        if (notice.type === 'oversize') return setOversize(notice.over ? { limit: notice.limit ?? 0 } : null);
         // The tab that made a change already has it.
         if (notice.from && notice.from === TAB_ID) return;
         onMessage?.(notice.type);
@@ -477,7 +482,7 @@ export function PageEditor({ pageId, me, canEdit, canComment, dark, onTitle, onI
     []
   ) as unknown as Editor;
 
-  const editable = synced && canEdit && viewMode === 'edit';
+  const editable = synced && canEdit && viewMode === 'edit' && (!oversize || !!canAdmin);
   const [saveNote, setSaveNote] = useState('');
   const lastManualSave = useRef(0);
   // The editor's built-in undo (y-undo) ends up with an empty stack here, so the page keeps
@@ -1139,6 +1144,16 @@ export function PageEditor({ pageId, me, canEdit, canComment, dark, onTitle, onI
           )}
         </Group>
       </Group>
+      {oversize && (
+        <Alert color="orange" variant="light" mx={{ base: 16, sm: 54 }} mb="xs" title="This page is too big">
+          <Text size="sm">
+            It is larger than this server allows{oversize.limit ? ` (${formatBytes(oversize.limit)})` : ''}.{' '}
+            {canAdmin
+              ? 'As an admin you can still edit it: cut it down, split it into several pages, or restore an earlier version from History.'
+              : 'It can be edited again once an admin has cut it down or restored an earlier version from History.'}
+          </Text>
+        </Alert>
+      )}
       <div className="title-row">
         <IconPicker icon={icon} editable={editable} onPick={(i) => (i ? meta.set('icon', i) : meta.delete('icon'))} />
         <textarea

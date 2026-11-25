@@ -11,7 +11,7 @@ import {
   visibleProjects,
 } from './access.js';
 import { requireUser, type User } from './auth.js';
-import { checkPageLimit, deletePageHistory, pastPageLimit, storageById, WebDav, workspaceLimits, workspaceOfPage, workspaceUsage } from './storage.js';
+import { checkCommentLimit, checkPageLimit, deletePageHistory, pastCommentLimit, pastPageLimit, storageById, WebDav, workspaceLimits, workspaceOfPage, workspaceUsage } from './storage.js';
 import { deleteTreeFiles } from './files.js';
 import type { Env } from './env.js';
 import { exportRoom, room, tellRoom } from './rooms.js';
@@ -152,10 +152,23 @@ export async function deletePage(req: Request, env: Env, u: User | null, id: str
 
 // ---------- search ----------
 
-export async function search(env: Env, u: User | null, wid: string, q: string): Promise<Response> {
+export async function search(env: Env, u: User | null, wid: string, q: string, titlesOnly = false): Promise<Response> {
   const user = requireUser(u);
   await requireWorkspace(env, user, wid);
   const visible = (await visibleProjects(env, user, wid)).map((p) => p.id);
+  if (titlesOnly) {
+    // Page titles only, matched anywhere in the title (the sidebar's "Titles" filter when the tree is too big to hold in the browser).
+    const needle = q.trim().replace(/[\\%_]/g, (c) => `\\${c}`);
+    if (!needle || visible.length === 0) return json([]);
+    const { results } = await env.DB.prepare(
+      `SELECT id, project_id, title, icon FROM pages
+       WHERE project_id IN (SELECT value FROM json_each(?1)) AND title LIKE ?2 ESCAPE '\\'
+       ORDER BY updated_at DESC LIMIT 30`
+    )
+      .bind(JSON.stringify(visible), `%${needle}%`)
+      .all<{ id: string; project_id: string; title: string; icon: string }>();
+    return json(results.map((r) => ({ ...r, snippet: '', matches: [] })));
+  }
   // Each word becomes a quoted prefix term, so user input can't break the FTS5 syntax.
   const terms = q
     .split(/\s+/)
@@ -394,6 +407,8 @@ export async function addComment(req: Request, env: Env, u: User | null, id: str
     ? (typeof b.body === 'string' ? b.body.trim().slice(0, 5000) : '')
     : str(b.body, 'comment', 5000);
   const commentId = newId();
+  const commentWorkspace = await workspaceOfPage(env, id);
+  await checkCommentLimit(env, commentWorkspace);
   let threadId: string = commentId;
   let parentId: string | null = null;
   let visibility: 'public' | 'mentioned' = b.visibility === 'mentioned' ? 'mentioned' : 'public';
@@ -438,6 +453,11 @@ export async function addComment(req: Request, env: Env, u: User | null, id: str
   )
     .bind(commentId, id, threadId, user.id, user.name, quote, quotePage, quoteRects, quotePdfUrl, quoteColor, quoteShape, quoteStart, quoteEnd, body, visibility, JSON.stringify(visibleTo), Date.now(), parentId)
     .first();
+  // Comments made at once could each fit the limit and together not: look again now this one is counted.
+  if (await pastCommentLimit(env, commentWorkspace, commentId)) {
+    await env.DB.prepare('DELETE FROM comments WHERE id = ?').bind(commentId).run();
+    throw new HttpError(403, 'this workspace has reached its comment limit');
+  }
   if (visibility === 'mentioned') {
     const extra = Array.isArray(b.mentionIds) ? b.mentionIds.filter((x): x is string => typeof x === 'string') : [];
     await syncThreadVisibility(env, id, threadId, [...extra, ...visibleTo]);

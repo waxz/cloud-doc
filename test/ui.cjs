@@ -364,6 +364,30 @@ const opened = []; // pages, for a screenshot of each when something fails
   await nav(alice).locator('svg[aria-label="Read only"]').waitFor({ state: 'detached' });
   console.log('✓ project settings: read-only switch, with a lock in the sidebar');
 
+  // --- a big workspace loads its tree a level at a time (forced here with a tiny threshold) ---
+  const rowsNow = () => nav(alice).locator('.tree-row').count();
+  const rowsWhole = await rowsNow();
+  const setLazy = (n) => alice.evaluate((over) => fetch('/api/admin/settings', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ treeLazyOver: over }) }), n);
+  await setLazy(1);
+  const treeCalls = [];
+  alice.on('request', (r) => r.url().includes('/tree') && treeCalls.push(r.url()));
+  await alice.reload();
+  await alice.waitForFunction((n) => document.querySelectorAll('.navbar .tree-row').length === n, rowsWhole, { timeout: 15000 });
+  assert.ok(treeCalls.some((u) => /open=/.test(u)), 'unfolded pages had their children asked for');
+  // title search falls back to the server
+  await nav(alice).getByText('Titles', { exact: true }).click();
+  const titleCalls = [];
+  alice.on('request', (r) => r.url().includes('titles=1') && titleCalls.push(r.url()));
+  await alice.getByPlaceholder(/Find a page by title/).fill('road');
+  await nav(alice).locator('.hit-title', { hasText: 'Roadmap' }).waitFor();
+  assert.ok(titleCalls.length > 0, 'with a big tree, titles are looked up on the server');
+  await alice.getByRole('button', { name: 'Exit search' }).click();
+  await nav(alice).getByText('Text', { exact: true }).click();
+  await setLazy(null);
+  await alice.reload();
+  await alice.waitForFunction((n) => document.querySelectorAll('.navbar .tree-row').length === n, rowsWhole, { timeout: 15000 });
+  console.log('✓ big workspaces: the tree loads a level at a time and shows the same pages; title search moves to the server');
+
   // --- columns: drag a block beside another, resize them, stack them again; a reader sees it live ---
   await alice.locator('.bn-editor').getByText('Two engineers in Q2.').first().click();
   await alice.keyboard.press('End');
