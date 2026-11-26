@@ -228,13 +228,74 @@ export function PageView({ pageId, me, dark, leading, trailing, linkFor, onTitle
   const reviewOnly = info.viaShare && !atLeast(info.role, 'commenter');
 
   const fileName = (title || 'Untitled').replace(/[\\/:*?"<>|]+/g, ' ').trim() || 'page';
+  const escapeHtmlText = (text: string) => text.replace(/[&<>]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[char]!);
   const exportAs = async (kind: 'md' | 'html' | 'print') => {
     if (!editor) return onError('The page is still loading.');
     // Let the menu finish closing, or its dropdown is still on screen when the print view is taken.
     if (kind === 'print') return void setTimeout(() => window.print(), 400);
     try {
       if (kind === 'md') download(`${fileName}.md`, `# ${title || 'Untitled'}\n\n${await editor.blocksToMarkdownLossy()}`, 'text/markdown');
-      else download(`${fileName}.html`, `<!doctype html><meta charset="utf-8"><title>${(title || 'Untitled').replace(/</g, '&lt;')}</title><h1>${(title || 'Untitled').replace(/</g, '&lt;')}</h1>${await editor.blocksToFullHTML()}`, 'text/html');
+      else {
+        const pageTitle = escapeHtmlText(title || 'Untitled');
+        const content = await editor.blocksToFullHTML();
+        const html = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>${pageTitle}</title>
+    <style>
+      :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #242a35; background: #f3f5f8; }
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 48px 20px; line-height: 1.7; }
+      .document { width: min(100%, 860px); margin: 0 auto; padding: clamp(28px, 6vw, 72px); background: #fff; border: 1px solid #e6e9ef; border-radius: 12px; box-shadow: 0 12px 40px rgb(24 39 75 / 8%); }
+      .document-header { margin-bottom: 36px; padding-bottom: 24px; border-bottom: 1px solid #e6e9ef; }
+      h1, h2, h3, h4 { color: #171c25; line-height: 1.25; letter-spacing: -0.025em; }
+      h1 { margin: 0; font-size: clamp(2rem, 5vw, 3rem); font-weight: 720; }
+      h2, h3, h4 { margin: 1.8em 0 0.6em; }
+      p { margin: 0.8em 0; }
+      a { color: #245fcb; text-decoration-thickness: 1px; text-underline-offset: 3px; overflow-wrap: anywhere; }
+      img, video, audio, iframe, canvas, svg { max-width: 100%; }
+      img { height: auto; border-radius: 8px; }
+      figure { margin: 1.5em 0; }
+      figcaption { color: #697386; font-size: 0.9em; }
+      table { width: 100%; border-collapse: collapse; margin: 1.25em 0; font-size: 0.95em; }
+      th, td { padding: 10px 12px; border: 1px solid #dfe3eb; text-align: left; vertical-align: top; }
+      th { background: #f6f7fa; font-weight: 650; }
+      blockquote { margin: 1.25em 0; padding: 4px 0 4px 18px; border-left: 3px solid #cbd5e1; color: #596579; }
+      pre { overflow-x: auto; padding: 16px 18px; border: 1px solid #e4e7ed; border-radius: 8px; background: #f6f7f9; font-size: 0.9em; line-height: 1.55; }
+      code { padding: 0.12em 0.35em; border-radius: 4px; background: #f0f2f5; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9em; }
+      pre code { padding: 0; background: transparent; }
+      hr { margin: 2em 0; border: 0; border-top: 1px solid #e6e9ef; }
+      ul, ol { padding-left: 1.5em; }
+      li + li { margin-top: 0.25em; }
+      .bn-block-group { min-width: 0; }
+      @media (max-width: 600px) {
+        body { padding: 0; background: #fff; }
+        .document { padding: 28px 22px; border: 0; border-radius: 0; box-shadow: none; }
+        .document-header { margin-bottom: 28px; }
+        table { display: block; overflow-x: auto; }
+      }
+      @media print {
+        :root { background: #fff; }
+        body { padding: 0; background: #fff; }
+        .document { width: 100%; padding: 0; border: 0; border-radius: 0; box-shadow: none; }
+        a { color: inherit; }
+        pre, blockquote, figure, table { break-inside: avoid; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="document">
+      <article>
+        <header class="document-header"><h1>${pageTitle}</h1></header>
+        ${content}
+      </article>
+    </main>
+  </body>
+</html>`;
+        download(`${fileName}.html`, html, 'text/html');
+      }
     } catch (e) {
       onError(errorText(e));
     }

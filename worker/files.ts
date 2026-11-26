@@ -172,7 +172,11 @@ export async function listWorkspaceFiles(env: Env, u: User | null, wid: string):
     .bind(wid)
     .all<{ file_id: string; page_id: string; title: string; project_id: string }>();
   const byFile = new Map<string, { id: string; title: string; project_id: string }[]>();
-  for (const r of refs) byFile.set(r.file_id, [...(byFile.get(r.file_id) ?? []), { id: r.page_id, title: r.title, project_id: r.project_id }]);
+  for (const r of refs) {
+    let pages = byFile.get(r.file_id);
+    if (!pages) byFile.set(r.file_id, (pages = []));
+    pages.push({ id: r.page_id, title: r.title, project_id: r.project_id });
+  }
   const out = [];
   for (const f of files) {
     const used = byFile.get(f.id) ?? [];
@@ -183,7 +187,7 @@ export async function listWorkspaceFiles(env: Env, u: User | null, wid: string):
       ...publicFile(f),
       owner_name: f.owner_name,
       storage_name: f.storage_name,
-      used_count: used.length,
+      used_count: usedVisible.length,
       used_in: usedVisible.slice(0, 20).map((p) => ({ id: p.id, title: p.title })),
       can_delete: isAdmin || f.owner_id === user.id,
     });
@@ -209,8 +213,9 @@ async function removeFiles(env: Env, files: FileRow[]): Promise<void> {
 export async function deleteFile(req: Request, env: Env, u: User | null, fid: string): Promise<Response> {
   const user = requireUser(u);
   const f = await loadFile(env, fid);
-  if (!(await canRead(req, env, user, f)) || !(await canManage(env, user, f))) {
-    throw new HttpError(await canRead(req, env, user, f) ? 403 : 404, 'only the uploader or a workspace admin can delete this file');
+  const readable = await canRead(req, env, user, f);
+  if (!readable || !(await canManage(env, user, f))) {
+    throw new HttpError(readable ? 403 : 404, 'only the uploader or a workspace admin can delete this file');
   }
   const { results: used } = await env.DB.prepare(
     'SELECT p.id, p.title FROM file_refs r JOIN pages p ON p.id = r.page_id WHERE r.file_id = ? LIMIT 20'

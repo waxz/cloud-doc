@@ -473,6 +473,9 @@ console.log('✓ share links: public read, subpages, commenter for outsiders, re
   const listing = (await alice.ok('GET', `/api/workspaces/${ws.id}/files`)).files;
   assert.equal(listing.find((f) => f.id === up2.id).used_count, 2, 'a page that uses the file is recorded');
   assert.deepEqual(listing.find((f) => f.id === up2.id).used_in.map((p) => p.id).sort(), [sPage.id, page2.id].sort());
+  const bobListing = (await bob.ok('GET', `/api/workspaces/${ws.id}/files`)).files;
+  assert.equal(bobListing.find((f) => f.id === up2.id).used_count, 1, 'file counts do not reveal uses in private projects');
+  assert.deepEqual(bobListing.find((f) => f.id === up2.id).used_in.map((p) => p.id), [page2.id]);
   assert.equal(listing.find((f) => f.id === onlyHere.id).used_count, 1);
   // Carol isn't in this workspace; Bob can't see files that only private pages use
   await carol.expect(404, 'GET', `/api/workspaces/${ws.id}/files`);
