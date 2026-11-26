@@ -61,7 +61,8 @@ const opened = []; // pages, for a screenshot of each when something fails
   // --- the first account is the admin ---
   const alice = await ctx('alice');
   const aliceEmail = `alice-${run}@example.com`, bobEmail = `bob-${run}@example.com`;
-  await alice.goto(B);
+  const appResponse = await alice.goto(B);
+  assert.match(appResponse.headers()['content-security-policy'] ?? '', /connect-src[^;]*https:/, 'remote PDFs can be fetched under the app CSP');
   await alice.getByRole('heading', { name: 'Set up Cloud Doc' }).waitFor();
   await shot(alice, 'ui-setup');
   await alice.getByLabel('Email').fill(aliceEmail);
