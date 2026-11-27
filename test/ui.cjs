@@ -217,6 +217,8 @@ const opened = []; // pages, for a screenshot of each when something fails
   await submitTwice(alice, alice.locator('.thread-composer').getByRole('button', { name: 'Reply', exact: true }));
   await bob.getByText('Yes if docs land by Feb.').waitFor({ timeout: 8000 });
   await shot(bob, 'ui-comments');
+  await alice.locator('.reader-panel-tab[aria-label="Open discussion view"]').click();
+  await alice.locator('.reader-panel-tab[aria-label="Open highlights view"]').click();
   await btn(alice, 'Resolve').click();
   await alice.getByRole('button', { name: /Resolved · 1/ }).click();
   await alice.getByText(/Resolved by/).waitFor();
