@@ -31,6 +31,25 @@ const opened = []; // pages, for a screenshot of each when something fails
   };
   const shot = (p, name) => p.screenshot({ path: `${SHOTS}/${name}.png` });
   const btn = (p, name) => p.getByRole('button', { name, exact: true });
+  const submitTwice = async (p, button) => {
+    let posts = 0;
+    const isCommentPost = (request) => request.method() === 'POST'
+      && new URL(request.url()).pathname.startsWith('/api/pages/')
+      && new URL(request.url()).pathname.endsWith('/comments');
+    const onRequest = (request) => { if (isCommentPost(request)) posts++; };
+    p.on('request', onRequest);
+    try {
+      const request = p.waitForRequest(isCommentPost);
+      const response = p.waitForResponse((result) => isCommentPost(result.request()));
+      await button.evaluate((element) => { element.click(); element.click(); });
+      await request;
+      await response;
+      await p.waitForTimeout(50);
+      assert.equal(posts, 1, 'a rapid double submit creates only one comment');
+    } finally {
+      p.off('request', onRequest);
+    }
+  };
   const nav = (p) => p.locator('.navbar');
   const treeRow = (p, title) => nav(p).locator('.tree-row').filter({ hasText: title });
   /** Clicks "New page" in a project and waits until the new, empty page is the one on screen. */
@@ -189,15 +208,17 @@ const opened = []; // pages, for a screenshot of each when something fails
   await panel.getByText('Highlights').first().waitFor();
   await panel.locator('.composer .comment-editor .bn-editor').click();
   await bob.keyboard.type('Is March realistic?');
-  await panel.getByRole('button', { name: 'Comment', exact: true }).click();
+  await submitTwice(bob, panel.getByRole('button', { name: 'Comment', exact: true }));
   await alice.getByRole('button', { name: 'Highlights', exact: true }).click();
   await alice.getByText('Is March realistic?').waitFor({ timeout: 8000 });
   await alice.locator('.dthread-actions').getByRole('button', { name: 'Reply', exact: true }).first().click();
   await alice.locator('.thread-composer .bn-editor').click();
   await alice.keyboard.type('Yes if docs land by Feb.');
-  await alice.locator('.thread-composer').getByRole('button', { name: 'Reply', exact: true }).click();
+  await submitTwice(alice, alice.locator('.thread-composer').getByRole('button', { name: 'Reply', exact: true }));
   await bob.getByText('Yes if docs land by Feb.').waitFor({ timeout: 8000 });
   await shot(bob, 'ui-comments');
+  await alice.locator('.reader-panel-tab[aria-label="Open discussion view"]').click();
+  await alice.locator('.reader-panel-tab[aria-label="Open highlights view"]').click();
   await btn(alice, 'Resolve').click();
   await alice.getByRole('button', { name: /Resolved · 1/ }).click();
   await alice.getByText(/Resolved by/).waitFor();
@@ -205,19 +226,19 @@ const opened = []; // pages, for a screenshot of each when something fails
   await alice.getByRole('button', { name: 'Discussion', exact: true }).click();
   await alice.locator('.composer .comment-editor .bn-editor').click();
   await alice.keyboard.type('Kickoff #plan with https://example.com');
-  await btn(alice, 'Post').click();
+  await submitTwice(alice, btn(alice, 'Post'));
   await alice.locator('.comment-token-tag', { hasText: '#plan' }).waitFor();
   await alice.locator('.comment-link', { hasText: 'https://example.com' }).waitFor();
   // a reply to a reply nests under it
   await alice.getByRole('button', { name: 'Reply', exact: true }).first().click();
   await alice.locator('.thread-composer .bn-editor').click();
   await alice.keyboard.type('First answer');
-  await alice.locator('.thread-composer').getByRole('button', { name: 'Reply', exact: true }).click();
+  await submitTwice(alice, alice.locator('.thread-composer').getByRole('button', { name: 'Reply', exact: true }));
   await alice.getByText('First answer').waitFor();
   await alice.locator('.dnode').getByRole('button', { name: 'Reply', exact: true }).first().click();
   await alice.locator('.thread-composer .bn-editor').click();
   await alice.keyboard.type('Answer to the answer');
-  await alice.locator('.thread-composer').getByRole('button', { name: 'Reply', exact: true }).click();
+  await submitTwice(alice, alice.locator('.thread-composer').getByRole('button', { name: 'Reply', exact: true }));
   await alice.locator('.dnode .dnode', { hasText: 'Answer to the answer' }).waitFor();
   console.log('✓ comments: highlight from the toolbar, live reply, resolve, discussion with tag and link');
 

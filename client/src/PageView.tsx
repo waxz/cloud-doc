@@ -320,6 +320,29 @@ export function PageView({ pageId, me, dark, leading, trailing, linkFor, onTitle
       <FilesPanel pageId={pageId} role={info.role} me={me} editor={editor} refreshKey={keys.files} onError={uploadError} />
     ) : null;
 
+  const annotationTabs = (panel === 'highlights' || panel === 'discussion') && (
+    <div className="reader-panel-tabs" role="group" aria-label="Reader annotations">
+      <button
+        type="button"
+        aria-label="Open highlights view"
+        aria-pressed={panel === 'highlights'}
+        className="reader-panel-tab"
+        onClick={() => setPanel('highlights')}
+      >
+        <IconHighlight size={15} /> Highlights
+      </button>
+      <button
+        type="button"
+        aria-label="Open discussion view"
+        aria-pressed={panel === 'discussion'}
+        className="reader-panel-tab"
+        onClick={() => setPanel('discussion')}
+      >
+        <IconMessages size={15} /> Discussion
+      </button>
+    </div>
+  );
+
   return (
     <div className={`page-layout${wide ? ' is-wide' : ''}${reviewOnly ? ' review-only' : ''}`}>
       <div className="page-main">
@@ -428,6 +451,7 @@ export function PageView({ pageId, me, dark, leading, trailing, linkFor, onTitle
       </div>
       {phone ? (
         <Drawer opened={!!panel} onClose={() => setPanel(null)} position="bottom" size="85%" title={panel && PANEL_TITLE[panel]} radius="md">
+          {annotationTabs}
           {body}
         </Drawer>
       ) : (
@@ -436,11 +460,14 @@ export function PageView({ pageId, me, dark, leading, trailing, linkFor, onTitle
               The outline is not one of these: it floats over the page, so opening it never moves the text. */}
           <div className={`right-col${sidePanel ? ' has-panel' : ''}${hasMargin ? ' has-margin' : ''}`}>
             {sidePanel && (
-              <aside className="side-panel">
-                <Group justify="space-between" className="side-panel-head">
-                  <Text fw={650} size="md">{PANEL_TITLE[panel!]}</Text>
-                  <CloseButton onClick={() => setPanel(null)} aria-label="Close panel" />
-                </Group>
+              <aside className="side-panel reader-panel">
+                <div className="side-panel-head reader-panel-head">
+                  <Group justify="space-between" wrap="nowrap">
+                    <Text fw={650} size="md">{PANEL_TITLE[panel!]}</Text>
+                    <CloseButton onClick={() => setPanel(null)} aria-label="Close panel" />
+                  </Group>
+                  {annotationTabs}
+                </div>
                 {body}
               </aside>
             )}

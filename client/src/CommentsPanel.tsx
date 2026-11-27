@@ -134,6 +134,8 @@ export function CommentsPanel({ mode, pageId, role, me, editor, refreshKey, quot
   const [quoteAnchor, setQuoteAnchor] = useState<{ page?: number; rects?: number[][]; pdfUrl?: string; start?: number; end?: number } | undefined>(undefined);
   const [quoteColor, setQuoteColor] = useState<string | undefined>(undefined);
   const [quoteShape, setQuoteShape] = useState<string | undefined>(undefined);
+  const [posting, setPosting] = useState(false);
+  const postingRef = useRef(false);
   const canComment = !!me && atLeast(role, 'commenter');
   const commentEditor = useCreateBlockNote({ schema }, []);
 
@@ -240,33 +242,43 @@ export function CommentsPanel({ mode, pageId, role, me, editor, refreshKey, quot
   const run = async (action: () => Promise<unknown>) => {
     try {
       await action();
-      await load();
       window.dispatchEvent(new CustomEvent('cloud-doc-comments-changed'));
+      return true;
     } catch (e) {
       onError(errorText(e));
+      return false;
     }
   };
-  const post = () => run(async () => {
-    await api.addComment(pageId, blocksToMarkdown(commentEditor.document as any) || draft.trim(), {
-      ...(mode === 'highlights' && quote ? { quote } : {}),
-      ...(quoteAnchor ? {
-        ...(quoteAnchor.page !== undefined ? { quotePage: quoteAnchor.page } : {}),
-        ...(quoteAnchor.rects !== undefined ? { quoteRects: quoteAnchor.rects } : {}),
-        ...(quoteAnchor.pdfUrl !== undefined ? { quotePdfUrl: quoteAnchor.pdfUrl } : {}),
-        ...(quoteAnchor.start !== undefined ? { quoteStart: quoteAnchor.start } : {}),
-        ...(quoteAnchor.end !== undefined ? { quoteEnd: quoteAnchor.end } : {}),
-      } : {}),
-      ...(quoteColor ? { quoteColor } : {}),
-      ...(quoteShape ? { quoteShape } : {}),
-      mentionIds: liveMentions(draft, [], members),
-    });
-    commentEditor.replaceBlocks(commentEditor.document, [{ type: 'paragraph', content: '' }]);
-    setQuote('');
-    setQuoteAnchor(undefined);
-    setQuoteColor(undefined);
-    setQuoteShape(undefined);
-    window.dispatchEvent(new CustomEvent('cloud-doc-comments-changed'));
-  });
+  const post = async () => {
+    if (postingRef.current || !draft.trim()) return;
+    postingRef.current = true;
+    setPosting(true);
+    try {
+      await run(async () => {
+        await api.addComment(pageId, blocksToMarkdown(commentEditor.document as any) || draft.trim(), {
+          ...(mode === 'highlights' && quote ? { quote } : {}),
+          ...(quoteAnchor ? {
+            ...(quoteAnchor.page !== undefined ? { quotePage: quoteAnchor.page } : {}),
+            ...(quoteAnchor.rects !== undefined ? { quoteRects: quoteAnchor.rects } : {}),
+            ...(quoteAnchor.pdfUrl !== undefined ? { quotePdfUrl: quoteAnchor.pdfUrl } : {}),
+            ...(quoteAnchor.start !== undefined ? { quoteStart: quoteAnchor.start } : {}),
+            ...(quoteAnchor.end !== undefined ? { quoteEnd: quoteAnchor.end } : {}),
+          } : {}),
+          ...(quoteColor ? { quoteColor } : {}),
+          ...(quoteShape ? { quoteShape } : {}),
+          mentionIds: liveMentions(draft, [], members),
+        });
+        commentEditor.replaceBlocks(commentEditor.document, [{ type: 'paragraph', content: '' }]);
+        setQuote('');
+        setQuoteAnchor(undefined);
+        setQuoteColor(undefined);
+        setQuoteShape(undefined);
+      });
+    } finally {
+      postingRef.current = false;
+      setPosting(false);
+    }
+  };
 
   const card = ({ root, replies }: { root: Comment; replies: Comment[] }) => (
     <Thread key={root.id} root={root} replies={replies} focused={focusedId === root.id} me={me} role={role} run={run} pageId={pageId} members={members} token={token} onToken={toggleToken} />
@@ -288,7 +300,7 @@ export function CommentsPanel({ mode, pageId, role, me, editor, refreshKey, quot
               <ActionIcon size="xs" variant="subtle" color="gray" aria-label="Remove quote" onClick={() => { setQuote(''); setQuoteAnchor(undefined); setQuoteColor(undefined); setQuoteShape(undefined); }}><IconX size={12} /></ActionIcon>
             </div>
           )}
-          <div className="comment-editor" onKeyDown={submitOnShortcut(post, !!draft.trim())}>
+          <div className="comment-editor" onKeyDown={submitOnShortcut(post, !!draft.trim() && !posting)}>
             <BlockNoteView editor={commentEditor} theme="light" formattingToolbar slashMenu={false} onChange={() => setDraft(editorText(commentEditor))}>
               <CommentSlashMenu editor={commentEditor} />
               <MentionMenu editor={commentEditor} members={members} meId={me?.id} />
@@ -296,7 +308,7 @@ export function CommentsPanel({ mode, pageId, role, me, editor, refreshKey, quot
           </div>
           <Group justify="space-between" mt={6} wrap="nowrap" gap={6}>
             <Text size="xs" c="dimmed">Ctrl+Enter to send · @ to mention</Text>
-            <Button size="compact-sm" radius="xl" disabled={!draft.trim()} onClick={post}>{mode === 'highlights' ? 'Comment' : 'Post'}</Button>
+            <Button size="compact-sm" radius="xl" disabled={!draft.trim() || posting} loading={posting} onClick={post}>{mode === 'highlights' ? 'Comment' : 'Post'}</Button>
           </Group>
         </Paper>
       )}
@@ -351,7 +363,7 @@ interface NodeCtx {
   threadId: string;
   me: User | null;
   role: Role;
-  run: (action: () => Promise<unknown>) => Promise<void>;
+  run: (action: () => Promise<unknown>) => Promise<boolean>;
   members: RegisteredMember[];
   token: TokenFilter | null;
   onToken: (token: TokenFilter) => void;
@@ -385,14 +397,28 @@ function Replies({ children, onCollapse }: { children: React.ReactNode; onCollap
 function ReplyComposer({ pageId, threadId, parentId, me, run, members, onDone }: NodeCtx & { parentId?: string; onDone: () => void }) {
   const editor = useCreateBlockNote({ schema }, []);
   const [text, setText] = useState('');
+  const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
   useEffect(() => { const t = setTimeout(() => { try { editor.focus(); } catch { /* not mounted yet */ } }, 100); return () => clearTimeout(t); }, [editor]);
-  const send = () => run(async () => {
-    await api.addComment(pageId, blocksToMarkdown(editor.document as any) || text.trim(), { threadId, ...(parentId ? { parentId } : {}), mentionIds: liveMentions(text, [], members) });
-    onDone();
-  });
+  const send = async () => {
+    if (sendingRef.current || !text.trim()) return;
+    sendingRef.current = true;
+    setSending(true);
+    try {
+      const succeeded = await run(() => api.addComment(pageId, blocksToMarkdown(editor.document as any) || text.trim(), {
+        threadId,
+        ...(parentId ? { parentId } : {}),
+        mentionIds: liveMentions(text, [], members),
+      }));
+      if (succeeded) onDone();
+    } finally {
+      sendingRef.current = false;
+      setSending(false);
+    }
+  };
   return (
     <div className="thread-composer" onClick={(e) => e.stopPropagation()}>
-      <div className="comment-reply-editor" onKeyDown={submitOnShortcut(send, !!text.trim())}>
+      <div className="comment-reply-editor" onKeyDown={submitOnShortcut(send, !!text.trim() && !sending)}>
         <BlockNoteView editor={editor} theme="light" formattingToolbar slashMenu={false} onChange={() => setText(editorText(editor))}>
           <CommentSlashMenu editor={editor} />
           <MentionMenu editor={editor} members={members} meId={me?.id} />
@@ -400,7 +426,7 @@ function ReplyComposer({ pageId, threadId, parentId, me, run, members, onDone }:
       </div>
       <Group gap={6} mt={6} justify="flex-end">
         <Button size="compact-xs" variant="subtle" color="gray" radius="xl" onClick={onDone}>Cancel</Button>
-        <Button size="compact-xs" radius="xl" disabled={!text.trim()} onClick={send}>Reply</Button>
+        <Button size="compact-xs" radius="xl" disabled={!text.trim() || sending} loading={sending} onClick={send}>Reply</Button>
       </Group>
     </div>
   );
@@ -432,7 +458,7 @@ export function Thread({ root, replies, focused, me, role, run, pageId, members,
   focused: boolean;
   me: User | null;
   role: Role;
-  run: (action: () => Promise<unknown>) => Promise<void>;
+  run: (action: () => Promise<unknown>) => Promise<boolean>;
   pageId: string;
   members: RegisteredMember[];
 }) {
@@ -545,7 +571,7 @@ function CommentItem({ c, me, role, run, members, token, onToken }: {
   c: Comment;
   me: User | null;
   role: Role;
-  run: (action: () => Promise<unknown>) => Promise<void>;
+  run: (action: () => Promise<unknown>) => Promise<boolean>;
   members: RegisteredMember[];
 }) {
   const [editing, setEditing] = useState(false);
