@@ -87,10 +87,11 @@ export function ThreadPopover({ pageId, me, role, onOpenPanel, onError }: {
   const run = async (action: () => Promise<unknown>) => {
     try {
       await action();
-      await load();
       window.dispatchEvent(new CustomEvent('cloud-doc-comments-changed'));
+      return true;
     } catch (e) {
       onError(errorText(e));
+      return false;
     }
   };
 
